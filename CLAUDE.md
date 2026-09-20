@@ -107,7 +107,11 @@ speech over it: one textured quad per live word, each rasterised once by
 - The glyph textures carry a baked black halo. `text.frag` uses their rgb as the
   ink mask and their alpha as coverage, so the letters take a colour while the
   halo only darkens what is behind them. That is what keeps a word readable
-  without dimming the visual.
+  without dimming the visual — and it is why `words.frag` does not need to be
+  dark. Legibility is handled locally, per word, wherever a word lands; the
+  backdrop only has to stay low contrast so the eye settles on the text. It was
+  first written near-black for legibility's sake, which was doing that job
+  twice, and the result did not read as a visual at all on the device.
 - Blending is premultiplied (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`) because `Canvas`
   bitmaps are premultiplied. `text.frag` keeps its output premultiplied to match.
 
@@ -373,10 +377,6 @@ Known rough edges:
   audio. Its brightness floor (`0.3`) and radial vignette
   (`smoothstep(2.2, 0.15, r) + 0.08`) are both too aggressive.
 - Latency has not been measured, only eyeballed as "follows the beat".
-- `words.frag` reads as near-black on the device. The words are legible, which
-  was the point, but the backdrop barely registers as a visual — its ceiling
-  (`0.05 + 0.10 * uLevel + 0.12 * band`) is too low now that the halo baked into
-  the glyphs is doing the legibility work on its own.
 - A word the recogniser revises *after* moving past it still goes wrong. The
   device log shows `Voltage work` becoming `Voltage that works` becoming
   `Voltage works`: "that" reaches the screen and "works" never does. Only a
