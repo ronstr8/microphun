@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The paper the mascot was drawn on. Off-white rather than pure white so
+         the icon still reads as a shape against a white launcher background. -->
+    <color name="ic_launcher_background">#F7F7FA</color>
+</resources>

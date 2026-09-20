@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">microphun</string>
+    <string name="mic_rationale">microphun needs the microphone to see the sound in the room.</string>
+    <string name="mic_denied">No microphone, no visuals. Grant the permission in Settings to continue.</string>
+    <string name="speech_unavailable">No speech recogniser on this device, so the word cloud will stay empty.</string>
+    <string name="speech_took_mic">Speech recognition took the microphone, so the backdrop will stay still while it listens.</string>
+</resources>
