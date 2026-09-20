@@ -9,8 +9,7 @@
 
 namespace microphun {
 
-AudioEngine::AudioEngine() {
-    ring_.assign(kRingSize, 0.0f);
+AudioEngine::AudioEngine() : ring_(kRingSize) {
     mono_.assign(kMaxCallbackFrames, 0.0f);
     scratch_.assign(kFftSize, 0.0f);
     analyzer_ = std::make_unique<Analyzer>(kFftSize, sampleRate_);
@@ -88,10 +87,8 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(oboe::AudioStream* stream,
     const auto* in = static_cast<const float*>(audioData);
     const int channels = stream->getChannelCount();
 
-    uint64_t cursor = written_.load(std::memory_order_relaxed);
-
-    // Downmix through a preallocated buffer as well as into the ring: the ring
-    // wraps, and the speech tap wants a contiguous block.
+    // Downmix through a preallocated buffer first: both consumers want a
+    // contiguous block, and it keeps the channel arithmetic in one place.
     int32_t done = 0;
     while (done < numFrames) {
         const auto chunk = std::min<int32_t>(numFrames - done,
@@ -102,13 +99,9 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(oboe::AudioStream* stream,
             for (int c = 0; c < channels; ++c) {
                 sample += in[(done + i) * channels + c];
             }
-            sample /= static_cast<float>(channels);
-
-            mono_[static_cast<std::size_t>(i)] = sample;
-            ring_[cursor & (kRingSize - 1)] = sample;
-            ++cursor;
+            mono_[static_cast<std::size_t>(i)] = sample / static_cast<float>(channels);
         }
-        written_.store(cursor, std::memory_order_release);
+        ring_.append(mono_.data(), chunk);
         tap_.push(mono_.data(), chunk);
         done += chunk;
     }
@@ -139,18 +132,31 @@ void AudioEngine::stopSpeechTap() {
 }
 
 void AudioEngine::frame(Frame& out) {
-    const uint64_t cursor = written_.load(std::memory_order_acquire);
-    if (cursor < kFftSize) {
-        out = Frame{};
-        return;
+    for (int attempt = 0; attempt < kSnapshotTries; ++attempt) {
+        switch (ring_.snapshot(scratch_.data(), kFftSize)) {
+            case SampleRing::Snapshot::Ok:
+                analyzer_->analyze(scratch_.data(), lastFrame_);
+                out = lastFrame_;
+                return;
+
+            case SampleRing::Snapshot::Filling:
+                // Not a full window of audio yet; the stream just started.
+                out = Frame{};
+                return;
+
+            case SampleRing::Snapshot::Lapped:
+                // The window was spliced from two different moments while we
+                // copied it, and an FFT of that seam smears energy across every
+                // band. Copying again is cheap; a torn frame is a visible flash.
+                break;
+        }
     }
 
-    const uint64_t start = cursor - kFftSize;
-    for (std::size_t i = 0; i < kFftSize; ++i) {
-        scratch_[i] = ring_[(start + i) & (kRingSize - 1)];
-    }
-
-    analyzer_->analyze(scratch_.data(), out);
+    // Lapped every time: this thread is far enough behind that the ring turns
+    // over faster than it can read it. Repeat the last good frame rather than
+    // analyse a seam.
+    LOGW("render thread lapped by the audio thread, reusing the last frame");
+    out = lastFrame_;
 }
 
 }  // namespace microphun

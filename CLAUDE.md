@@ -42,14 +42,16 @@ mic ─► Oboe callback ─► ring buffer ─► [GL thread] FFT ─► Frame 
 
 The audio callback does nothing but downmix and append — to the FFT ring, and
 to the speech tap's ring when a recogniser is listening. No allocation, locking,
-logging or syscall happens on the realtime thread. The FFT runs on the GL
+logging or syscall happens on the realtime thread, and nothing downstream is
+ever allowed to make it wait. The FFT runs on the GL
 thread, pulled once per rendered frame — a 2048-point transform at 60 fps is
 cheap, and this keeps the audio path clean. The tap's resampling and its
 `write(2)` happen on their own thread for the same reason.
 
 | Layer | Files |
 | --- | --- |
-| Capture | `app/src/main/cpp/audio_engine.{h,cpp}` — Oboe input stream, ring buffer, device-disconnect recovery |
+| Capture | `app/src/main/cpp/audio_engine.{h,cpp}` — Oboe input stream, device-disconnect recovery |
+| Ring | `app/src/main/cpp/sample_ring.{h,cpp}` — lock-free single-producer ring with snapshot reads; `sample_ring_test.cpp` is a host test, not in the CMake target |
 | Speech feed | `app/src/main/cpp/speech_tap.{h,cpp}` — resample to 16 kHz mono S16, write to a pipe; `speech_tap_test.cpp` is a host test, not in the CMake target |
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
@@ -198,6 +200,17 @@ Three things about it are deliberate:
 - **`Frame::kBands` in `analysis.h` and `AudioEngine.BAND_COUNT` in Kotlin
   must match.** The constructor checks this at runtime and throws if they
   drift.
+- **The FFT ring is read as a snapshot, and a stale snapshot is detected, not
+  prevented.** `SampleRing` hands back the newest `kFftSize` samples while the
+  callback keeps appending; the two collide once the callback wraps around onto
+  the window. The slots are therefore relaxed atomics — the same instructions on
+  arm64, minus the compiler's licence to assume they cannot change — and
+  `snapshot` re-reads the write cursor afterwards, reporting `Lapped` when the
+  window was spliced from two moments. `AudioEngine::frame` retries and then
+  repeats the last good frame. Do not "fix" this by making the producer wait for
+  the consumer: that stalls live audio to protect stale samples. The speech tap
+  drops at the producer precisely because its consumer wants every sample in
+  order, and the FFT's does not.
 - Shaders are ES 3.0 (`#version 300 es`); the manifest requires ES 3.0 and the
   surface requests context version 3.
 - `AudioEngine` is `AutoCloseable` and owns a native pointer. Failing to
@@ -275,13 +288,24 @@ cd app/src/main/cpp
 g++ -std=c++17 -O2 -I. your_test.cpp fft.cpp analysis.cpp -o /tmp/t && /tmp/t
 ```
 
-`SpeechTap` is host-testable too — its logging is the only Android-specific part
-and falls back to `stderr` off device. `speech_tap_test.cpp` covers the
-resampler, the PCM conversion and the full-pipe behaviour:
+`SpeechTap` and `SampleRing` are host-testable too — logging is the only
+Android-specific part of either, and it falls back to `stderr` off device:
 
 ```bash
 cd app/src/main/cpp
+# the resampler, the PCM conversion and the full-pipe behaviour
 g++ -std=c++17 -O2 -I. speech_tap_test.cpp speech_tap.cpp -o /tmp/t -pthread && /tmp/t
+# the ring's contract, and the race its lap check exists to catch
+g++ -std=c++17 -O2 -I. sample_ring_test.cpp sample_ring.cpp -o /tmp/t -pthread && /tmp/t
+```
+
+Both are worth running under ThreadSanitizer as well, which is what shows the
+concurrent accesses are defined rather than merely lucky. In this environment it
+needs ASLR disabled:
+
+```bash
+g++ -std=c++17 -O1 -g -fsanitize=thread -I. sample_ring_test.cpp sample_ring.cpp -o /tmp/t -pthread
+setarch $(uname -m) -R /tmp/t
 ```
 
 Native crashes symbolise with `ndk-stack`; debug builds are `isJniDebuggable`.
@@ -335,6 +359,12 @@ Known rough edges:
   device never needed it), the fallback to giving the recogniser the microphone,
   and whether the default word size and nine-second lifetime feel right in a
   long conversation. Only three words were ever on screen at once.
+- The FFT ring's race is fixed and the fix is covered. `sample_ring_test.cpp`
+  runs a writer that never waits against a reader taking a million snapshots:
+  none of the accepted windows is ever spliced, while a control group built from
+  the old non-atomic ring tears dozens to hundreds of times in the same run, so
+  the test demonstrably can see the bug. Squeezing the headroom provokes ~10,000
+  detected laps per run, and the whole thing is clean under ThreadSanitizer.
 - The speech tap's DSP *is* verified, on the host, via `speech_tap_test.cpp`,
   including a clean run under ThreadSanitizer
   (`g++ -O1 -g -fsanitize=thread …`, which needs ASLR off: `setarch $(uname -m) -R`):

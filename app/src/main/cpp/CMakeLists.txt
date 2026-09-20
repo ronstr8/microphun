@@ -6,6 +6,7 @@ find_package(oboe REQUIRED CONFIG)
 add_library(microphun SHARED
     fft.cpp
     analysis.cpp
+    sample_ring.cpp
     audio_engine.cpp
     speech_tap.cpp
     jni_bridge.cpp
