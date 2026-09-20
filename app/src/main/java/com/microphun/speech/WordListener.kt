@@ -14,6 +14,7 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.annotation.MainThread
 import androidx.annotation.RequiresApi
+import com.microphun.BuildConfig
 import com.microphun.audio.AudioEngine
 import java.io.IOException
 import java.util.Locale
@@ -50,8 +51,8 @@ class WordListener(
     private var listening = false
     private var backoffMillis = MIN_RESTART_MILLIS
 
-    /** Tokens already handed to [sink] for the utterance in progress. */
-    private val emitted = ArrayList<String>()
+    /** How many tokens of the hypothesis in progress have reached [sink]. */
+    private var emittedCount = 0
 
     /** The pipe's read end, held open until the session that uses it ends. */
     private var audioSource: ParcelFileDescriptor? = null
@@ -93,7 +94,7 @@ class WordListener(
     fun stop() {
         listening = false
         handler.removeCallbacks(restart)
-        emitted.clear()
+        emittedCount = 0
         recognizer?.let { target ->
             try {
                 target.cancel()
@@ -133,7 +134,7 @@ class WordListener(
     }
 
     private fun listen(target: SpeechRecognizer) {
-        emitted.clear()
+        emittedCount = 0
 
         // Each session gets its own pipe. Reusing one would hand the next
         // session whatever audio was still sitting in the buffer.
@@ -252,25 +253,37 @@ class WordListener(
     }
 
     /**
-     * Pushes whatever is new in [results] into the sink.
+     * Pushes whatever has settled in [results] into the sink.
      *
-     * A partial hypothesis is revised as the recogniser hears more of the
-     * sentence. Words already on screen cannot be taken back, so only the tail
-     * past what was emitted counts as new; a hypothesis that shrinks simply
-     * re-establishes where the tail starts.
+     * A partial hypothesis is revised as the recogniser hears more, and the
+     * word being spoken right now is revised most of all: "mi" becomes "mic"
+     * becomes "microphone". A word already on screen cannot be taken back, so
+     * emitting the whole hypothesis would strand each word at its earliest,
+     * shortest guess — one syllable of every word, never corrected.
+     *
+     * A token is settled once the recogniser has moved past it, which means
+     * every token but the last. On a final result the last one has settled too.
+     * The cost is that a word appears once the next one begins, or at the end
+     * of the utterance if it is the last.
      */
-    private fun emit(results: Bundle?): Boolean {
+    private fun emit(results: Bundle?, final: Boolean): Boolean {
         val hypothesis = results
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             ?.firstOrNull()
             ?: return false
 
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "${if (final) "final  " else "partial"}: $hypothesis")
+        }
+
         val tokens = tokenise(hypothesis)
-        for (i in emitted.size until tokens.size) {
+        val settled = if (final) tokens.size else tokens.size - 1
+        for (i in emittedCount until settled) {
             sink.offer(tokens[i])
         }
-        emitted.clear()
-        emitted.addAll(tokens)
+        // Never goes backwards: a hypothesis that shrinks must not re-emit what
+        // is already on screen.
+        emittedCount = maxOf(emittedCount, settled)
         return tokens.isNotEmpty()
     }
 
@@ -293,11 +306,11 @@ class WordListener(
         override fun onPartialResults(partialResults: Bundle?) {
             // Partials are the earliest proof that audio is reaching the
             // recogniser, which is what the fallback is watching for.
-            heard(emit(partialResults))
+            heard(emit(partialResults, final = false))
         }
 
         override fun onResults(results: Bundle?) {
-            heard(emit(results))
+            heard(emit(results, final = true))
             // A one-shot session is over; the next utterance needs a new one.
             scheduleRestart(MIN_RESTART_MILLIS)
         }
@@ -308,12 +321,12 @@ class WordListener(
          * from scratch, so the emitted tail resets with it.
          */
         override fun onSegmentResults(segmentResults: Bundle) {
-            heard(emit(segmentResults))
-            emitted.clear()
+            heard(emit(segmentResults, final = true))
+            emittedCount = 0
         }
 
         override fun onEndOfSegmentedSession() {
-            emitted.clear()
+            emittedCount = 0
             scheduleRestart(MIN_RESTART_MILLIS)
         }
 

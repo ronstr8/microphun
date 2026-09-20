@@ -160,9 +160,30 @@ WordListener        ──►  read end handed to the service as EXTRA_AUDIO_SOU
 utterance and backs off exponentially on real errors while treating no-match and
 timeout as ordinary silence. Restarts go through a single pending `Runnable`,
 because a session can report both a result and an error, and `cancel` can report
-one of its own. Partial results are requested so a word appears while it is
-being said; only the tail past what was already emitted is pushed, since words
-on screen cannot be taken back when the recogniser revises a hypothesis.
+one of its own.
+
+### Which words are settled
+
+Partial results are requested so a word can appear while it is still being said,
+but **only tokens the recogniser has moved past are emitted** — every token but
+the last, plus the last one on a final result. That rule is not fussiness. The
+recogniser refines the word in progress one guess at a time, and each guess has
+the same token count as the one before it:
+
+```
+partial: ... problems with vol
+partial: ... problems with volt
+partial: ... problems with voltage
+```
+
+Emitting the whole hypothesis therefore strands every word at its earliest,
+shortest guess — one syllable each, never corrected, because a word already
+drawn cannot be taken back. The cost of the rule is that a word appears when the
+next one begins, or at the end of the utterance if it is the last.
+
+Set `emittedCount` back to zero whenever a new hypothesis starts: a new session,
+a new segment, or the end of a segmented session. It never decreases within a
+hypothesis, so a hypothesis that shrinks cannot re-emit what is already up.
 
 `WordStream` is the only state shared between the recogniser (main thread) and
 `WordLayer` (GL thread): a bounded queue that drops words rather than blocking
@@ -321,7 +342,8 @@ on 2026-09-20:
 - The rename from `earwig` is verified on device: `com.microphun` installs and
   runs, `libmicrophun.so` loads, and its LOAD segments are still 16 KB aligned.
 - **The `words` visual works end to end.** Speech is recognised and lands on
-  screen, placed, tinted and legible over the backdrop.
+  screen, placed, tinted and legible over the backdrop — whole words, confirmed
+  by ear on device after the settled-token rule went in.
 - **`EXTRA_AUDIO_SOURCE` is honoured, and we keep the microphone.** Over a
   session where the recogniser (Samsung's on-device SODA) returned eight final
   results, `dumpsys`-visible audio policy shows exactly one input ever opened:
@@ -355,6 +377,11 @@ Known rough edges:
   was the point, but the backdrop barely registers as a visual — its ceiling
   (`0.05 + 0.10 * uLevel + 0.12 * band`) is too low now that the halo baked into
   the glyphs is doing the legibility work on its own.
+- A word the recogniser revises *after* moving past it still goes wrong. The
+  device log shows `Voltage work` becoming `Voltage that works` becoming
+  `Voltage works`: "that" reaches the screen and "works" never does. Only a
+  word cloud that can revise what it has already drawn would fix this, which
+  means `WordStream` carrying replacements rather than plain words.
 - Untested on hardware in the `words` visual: the one-shot restart path (the
   device never needed it), the fallback to giving the recogniser the microphone,
   and whether the default word size and nine-second lifetime feel right in a
