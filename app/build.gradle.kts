@@ -58,6 +58,13 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.all {
+            // Host tests are meant to be read, not just counted.
+            it.testLogging { showStandardStreams = true }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -74,4 +81,8 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.oboe)
+
+    // The corpus and the chainer are plain Kotlin with no Android dependency,
+    // so they are tested on the host: ./gradlew :app:testDebugUnitTest
+    testImplementation(libs.junit)
 }

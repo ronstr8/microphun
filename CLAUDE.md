@@ -65,7 +65,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
 | Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer` |
-| Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue) |
+| Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
 
@@ -237,6 +237,40 @@ Three things about it are deliberate:
 - **The monochrome layer is ink, not a silhouette.** It is built from how dark
   the drawing is, so the face and the mesh survive; a flat silhouette of this
   character is an unreadable blob.
+
+## Inventing phrases
+
+`WordCorpus` keeps what the room has said and `MarkovChain` recombines it. Both
+are plain Kotlin with no Android dependency, and both are covered by host tests:
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+Four things about them are load-bearing:
+
+- **The corpus is session-only.** In memory, never written anywhere, bounded at
+  2000 words, cleared when the visual collecting it goes away. Same posture as
+  the microphone: nothing outlives the moment it was for.
+- **Utterances are kept apart, not poured into one stream.** A chain built from
+  a flat word list follows the last word of one sentence with the first word of
+  something said four minutes later. `WordListener` knows the boundaries, so the
+  corpus does too.
+- **An order-1 chain over a corpus this small would just echo.** Most pairs are
+  seen once, so a plain walk replays the input. Three things prevent that:
+  backoff (ignore a lone successor sometimes and jump elsewhere), recency
+  weighting (recent successors are likelier, so the chain drifts with the
+  conversation), and a cap of 3–7 words.
+- **A phrase may never reproduce four consecutive words that were heard.**
+  Three in a row is a coincidence; four is quoting someone onto a screen other
+  people can see. `WordCorpus.GUARD_RUN` sets it, the guard is enforced during
+  generation rather than by rejection afterwards, and a test walks 500 seeds
+  against a corpus that is one long deterministic chain — the worst case — to
+  prove it holds.
+
+Phrases also prefer to stop on a word that ended something the room said, by
+walking a little past the target length and then trimming back. Without it about
+half of them dangle on "the" or "by", which reads as broken rather than dreamy.
 
 ## Conventions
 
