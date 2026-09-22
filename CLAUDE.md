@@ -64,7 +64,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | Speech feed | `app/src/main/cpp/speech_tap.{h,cpp}` — resample to 16 kHz mono S16, write to a pipe; `speech_tap_test.cpp` is a host test, not in the CMake target |
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
-| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `WordLayer` |
+| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer` |
 | Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
@@ -103,8 +103,17 @@ radial bars), `words` (a dark backdrop under the word cloud — see below).
 
 The one visual that is not just a fragment shader. `words.frag` draws a
 deliberately dark, low-contrast backdrop, and `WordLayer` then draws recognised
-speech over it: one textured quad per live word, each rasterised once by
-`Canvas` into its own texture.
+speech over it: one textured quad per live word.
+
+Rasterising lives in `GlyphCache`, not in the layout — the `Paint` and its baked
+halo, the bitmap, the texture upload, and the hue derived from the text. Layouts
+share one cache, so a word costs one rasterisation however many times it appears
+or however many visuals show it. **Its one rule: ask for a glyph on every frame
+you draw it, rather than holding the `Glyph`.** Entries are evicted
+least-recently-used past 48, and the lookup is what marks one as still in use;
+hold a reference instead and a long-lived word can have its texture deleted out
+from under it. The renderer owns the cache and clears it on the way out of the
+visual.
 
 - A new word lands at a random position — best of ten candidates by distance to
   the words already up, which is cheap and enough to stop the cloud piling into

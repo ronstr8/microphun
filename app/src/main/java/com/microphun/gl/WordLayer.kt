@@ -1,20 +1,12 @@
 package com.microphun.gl
 
 import android.content.res.AssetManager
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Rect
-import android.graphics.Typeface
 import android.opengl.GLES30
-import android.opengl.GLUtils
 import com.microphun.audio.AudioFrame
 import com.microphun.speech.WordStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.random.Random
@@ -22,30 +14,26 @@ import kotlin.random.Random
 /**
  * The word cloud drawn over the `words` visual.
  *
- * Each recognised word is rasterised once by [Canvas] into its own texture and
- * from then on lives as a textured quad: it lands somewhere at random, holds
- * still, and fades out if the room stops saying it. Hearing it again does not
- * move it — the word gains a hit, which enlarges it permanently and kicks a
- * pulse — so over a conversation the screen becomes a map of what is being
- * repeated.
+ * A recognised word lands somewhere at random, holds still, and fades out if
+ * the room stops saying it. Hearing it again does not move it — the word gains
+ * a hit, which enlarges it permanently and kicks a pulse — so over a
+ * conversation the screen becomes a map of what is being repeated.
+ *
+ * This owns the layout and nothing else: [GlyphCache] owns the textures, and is
+ * shared, so a word costs one rasterisation however many times it appears or
+ * however many visuals show it. Note the cache's rule — a glyph is asked for on
+ * every frame it is drawn, since the lookup is what marks it as still in use.
  *
  * Everything here runs on the GL thread, once per frame, with [WordStream] as
- * the only state shared with the recogniser. Rasterising allocates a bitmap,
- * but only on the frame a genuinely new word arrives.
+ * the only state shared with the recogniser.
  */
 class WordLayer(
     private val assets: AssetManager,
     private val stream: WordStream,
+    private val glyphs: GlyphCache,
 ) {
 
-    private class Word(
-        val text: String,
-        val texture: Int,
-        /** Rasterised size in texels; the quad keeps this aspect ratio. */
-        val rasterWidth: Float,
-        val rasterHeight: Float,
-        val hue: Float,
-    ) {
+    private class Word(val text: String) {
         var centerX = 0f
         var centerY = 0f
         var hits = 1
@@ -59,20 +47,19 @@ class WordLayer(
         /** Seconds since the word appeared, and since it was last heard. */
         var life = 0f
         var idle = 0f
+
+        val expired: Boolean get() = idle > LIFETIME_SECONDS + FADE_SECONDS
+
+        val alpha: Float
+            get() {
+                val fadeIn = (life / FADE_IN_SECONDS).coerceAtMost(1f)
+                val fadeOut = 1f - ((idle - LIFETIME_SECONDS) / FADE_SECONDS).coerceIn(0f, 1f)
+                return fadeIn * fadeOut
+            }
     }
 
     private val words = ArrayList<Word>(MAX_WORDS)
     private val random = Random.Default
-
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        textSize = RASTER_TEXT_PX
-        color = Color.WHITE
-        // A black halo, baked into the glyph texture, is what lets a word stay
-        // readable over a moving visual without dimming the visual itself.
-        setShadowLayer(GLOW_RADIUS, 0f, 0f, Color.BLACK)
-    }
-    private val bounds = Rect()
 
     private var program: ShaderProgram? = null
     private lateinit var quad: FloatBuffer
@@ -96,13 +83,12 @@ class WordLayer(
         program = ShaderProgram.link(readAsset("shaders/text.vert"), readAsset("shaders/text.frag"))
     }
 
-    /** Drops every live word and its texture, and discards pending words. */
+    /**
+     * Drops every live word and discards pending ones. The textures stay in the
+     * cache, which is shared and cleared by whoever owns it.
+     */
     fun clear() {
-        if (words.isNotEmpty()) {
-            val textures = IntArray(words.size) { words[it].texture }
-            GLES30.glDeleteTextures(textures.size, textures, 0)
-            words.clear()
-        }
+        words.clear()
         stream.clear()
     }
 
@@ -117,8 +103,6 @@ class WordLayer(
             val word = stream.poll() ?: break
             ingest(word, width, height)
         }
-
-        advance(dt, height)
         if (words.isEmpty()) return
 
         // Premultiplied: the glyph bitmaps come out of Canvas that way, and the
@@ -135,35 +119,61 @@ class WordLayer(
         GLES30.glEnableVertexAttribArray(position)
         GLES30.glVertexAttribPointer(position, 2, GLES30.GL_FLOAT, false, 0, quad)
 
-        for (word in words) {
-            val bump = word.scale * (1f + PULSE_OVERSHOOT * word.pulse + 0.10f * frame.level)
-            var halfWidth = word.rasterWidth * bump * 0.5f
-            var halfHeight = word.rasterHeight * bump * 0.5f
-
-            // A long word at full size can be wider than the screen; shrink it
-            // rather than letting it run off both edges.
-            val overflow = (halfWidth * 2f) / (width * MAX_WIDTH_FRACTION)
-            if (overflow > 1f) {
-                halfWidth /= overflow
-                halfHeight /= overflow
+        val iterator = words.iterator()
+        while (iterator.hasNext()) {
+            val word = iterator.next()
+            // Also the cache's "still in use" mark for this frame.
+            val glyph = glyphs.get(word.text)
+            if (glyph == null) {
+                iterator.remove()
+                continue
             }
 
-            val x = word.centerX.coerceIn(halfWidth, (width - halfWidth).coerceAtLeast(halfWidth))
-            val y = word.centerY.coerceIn(halfHeight, (height - halfHeight).coerceAtLeast(halfHeight))
+            advance(word, glyph, dt, height)
+            if (word.expired) {
+                iterator.remove()
+                continue
+            }
 
-            shader.set("uCenter", x, y)
-            shader.set("uHalfSize", halfWidth, halfHeight)
-            shader.set("uHue", word.hue)
-            shader.set("uAlpha", alphaOf(word))
-            shader.set("uGlow", word.pulse * 0.8f + frame.onset * 0.35f)
-
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, word.texture)
-            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            drawWord(shader, word, glyph, frame, width, height)
         }
 
         GLES30.glDisableVertexAttribArray(position)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
+    private fun drawWord(
+        shader: ShaderProgram,
+        word: Word,
+        glyph: GlyphCache.Glyph,
+        frame: AudioFrame,
+        width: Float,
+        height: Float,
+    ) {
+        val bump = word.scale * (1f + PULSE_OVERSHOOT * word.pulse + 0.10f * frame.level)
+        var halfWidth = glyph.width * bump * 0.5f
+        var halfHeight = glyph.height * bump * 0.5f
+
+        // A long word at full size can be wider than the screen; shrink it
+        // rather than letting it run off both edges.
+        val overflow = (halfWidth * 2f) / (width * MAX_WIDTH_FRACTION)
+        if (overflow > 1f) {
+            halfWidth /= overflow
+            halfHeight /= overflow
+        }
+
+        val x = word.centerX.coerceIn(halfWidth, (width - halfWidth).coerceAtLeast(halfWidth))
+        val y = word.centerY.coerceIn(halfHeight, (height - halfHeight).coerceAtLeast(halfHeight))
+
+        shader.set("uCenter", x, y)
+        shader.set("uHalfSize", halfWidth, halfHeight)
+        shader.set("uHue", glyph.hue)
+        shader.set("uAlpha", word.alpha)
+        shader.set("uGlow", word.pulse * 0.8f + frame.onset * 0.35f)
+
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, glyph.texture)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     /** Adds [text] to the cloud, or scores a hit against the word already up. */
@@ -176,44 +186,30 @@ class WordLayer(
             return
         }
 
+        // Rasterise now rather than mid-draw, and skip anything that has no
+        // drawable extent instead of adding a word that can never be shown.
+        if (glyphs.get(text) == null) return
+
         if (words.size >= MAX_WORDS) retireStalest()
 
-        val word = rasterise(text) ?: return
+        val word = Word(text)
         place(word, width, height)
         words.add(word)
     }
 
-    private fun advance(dt: Float, height: Float) {
-        val iterator = words.iterator()
-        while (iterator.hasNext()) {
-            val word = iterator.next()
-            word.life += dt
-            word.idle += dt
-            word.pulse = (word.pulse - dt * PULSE_DECAY_PER_SECOND).coerceAtLeast(0f)
+    private fun advance(word: Word, glyph: GlyphCache.Glyph, dt: Float, height: Float) {
+        word.life += dt
+        word.idle += dt
+        word.pulse = (word.pulse - dt * PULSE_DECAY_PER_SECOND).coerceAtLeast(0f)
 
-            val target = targetScale(word, height)
-            // Frame-rate independent ease, clamped so a long frame cannot
-            // overshoot past the target.
-            word.scale += (target - word.scale) * min(1f, dt * SCALE_EASE)
-
-            if (word.idle > LIFETIME_SECONDS + FADE_SECONDS) {
-                GLES30.glDeleteTextures(1, intArrayOf(word.texture), 0)
-                iterator.remove()
-            }
-        }
-    }
-
-    /** Height on screen the word has earned, as a fraction of the viewport. */
-    private fun targetScale(word: Word, height: Float): Float {
+        // Height on screen the word has earned, as a fraction of the viewport.
         val fraction = (BASE_HEIGHT_FRACTION + HIT_HEIGHT_FRACTION * (word.hits - 1))
             .coerceAtMost(MAX_HEIGHT_FRACTION)
-        return height * fraction / word.rasterHeight
-    }
+        val target = height * fraction / glyph.height
 
-    private fun alphaOf(word: Word): Float {
-        val fadeIn = (word.life / FADE_IN_SECONDS).coerceAtMost(1f)
-        val fadeOut = 1f - ((word.idle - LIFETIME_SECONDS) / FADE_SECONDS).coerceIn(0f, 1f)
-        return fadeIn * fadeOut
+        // Frame-rate independent ease, clamped so a long frame cannot overshoot
+        // past the target.
+        word.scale += (target - word.scale) * min(1f, dt * SCALE_EASE)
     }
 
     /**
@@ -246,75 +242,13 @@ class WordLayer(
 
     private fun retireStalest() {
         val stalest = words.maxByOrNull { it.idle } ?: return
-        GLES30.glDeleteTextures(1, intArrayOf(stalest.texture), 0)
         words.remove(stalest)
-    }
-
-    /**
-     * Draws [text] into a texture once, at a size generous enough that scaling
-     * it up for a repeated word stays crisp.
-     */
-    private fun rasterise(text: String): Word? {
-        paint.getTextBounds(text, 0, text.length, bounds)
-        val pad = (GLOW_RADIUS * 1.6f).toInt()
-        val width = bounds.width() + pad * 2
-        val height = bounds.height() + pad * 2
-        if (width <= 0 || height <= 0) return null
-
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        Canvas(bitmap).drawText(
-            text,
-            (pad - bounds.left).toFloat(),
-            (pad - bounds.top).toFloat(),
-            paint,
-        )
-
-        val texture = upload(bitmap)
-        bitmap.recycle()
-
-        // Hue from the text itself, so a word keeps its colour across sessions
-        // and two different words rarely collide.
-        val hue = (abs(text.hashCode()) % 997) / 997f
-        return Word(text, texture, width.toFloat(), height.toFloat(), hue)
-    }
-
-    private fun upload(bitmap: Bitmap): Int {
-        val ids = IntArray(1)
-        GLES30.glGenTextures(1, ids, 0)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, ids[0])
-        GLES30.glTexParameteri(
-            GLES30.GL_TEXTURE_2D,
-            GLES30.GL_TEXTURE_MIN_FILTER,
-            GLES30.GL_LINEAR,
-        )
-        GLES30.glTexParameteri(
-            GLES30.GL_TEXTURE_2D,
-            GLES30.GL_TEXTURE_MAG_FILTER,
-            GLES30.GL_LINEAR,
-        )
-        GLES30.glTexParameteri(
-            GLES30.GL_TEXTURE_2D,
-            GLES30.GL_TEXTURE_WRAP_S,
-            GLES30.GL_CLAMP_TO_EDGE,
-        )
-        GLES30.glTexParameteri(
-            GLES30.GL_TEXTURE_2D,
-            GLES30.GL_TEXTURE_WRAP_T,
-            GLES30.GL_CLAMP_TO_EDGE,
-        )
-        GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bitmap, 0)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
-        return ids[0]
     }
 
     private fun readAsset(path: String): String =
         assets.open(path).bufferedReader().use { it.readText() }
 
     private companion object {
-        /** Rasterised once at this size; the GPU scales from here. */
-        const val RASTER_TEXT_PX = 132f
-        const val GLOW_RADIUS = 18f
-
         const val MAX_WORDS = 18
 
         /** Past this, more repetition stops making a word any bigger. */

@@ -33,6 +33,9 @@ class VisualizerRenderer(
 
     private var wordLayer: WordLayer? = null
 
+    // Shared so a word costs one rasterisation however many layouts show it.
+    private var glyphs: GlyphCache? = null
+
     private var width = 1f
     private var height = 1f
     private var startMillis = 0L
@@ -74,8 +77,11 @@ class VisualizerRenderer(
         GLES30.glClearColor(0f, 0f, 0f, 1f)
 
         // The context is new, so every program and texture from the old one is
-        // already gone: the word layer is rebuilt rather than released.
-        wordLayer = WordLayer(assets, words).apply { create() }
+        // already gone: the glyph cache and word layer are rebuilt rather than
+        // released.
+        val cache = GlyphCache()
+        glyphs = cache
+        wordLayer = WordLayer(assets, words, cache).apply { create() }
     }
 
     override fun onSurfaceChanged(unused: GL10?, w: Int, h: Int) {
@@ -90,8 +96,12 @@ class VisualizerRenderer(
             loadShader(wanted)
             currentShader = wanted
             // Leaving the word cloud discards it; coming back starts empty
-            // rather than with whatever the room said minutes ago.
-            if (SHADERS[wanted] != WORDS_SHADER) wordLayer?.clear()
+            // rather than with whatever the room said minutes ago. The glyph
+            // textures go with it, since nothing else is using them.
+            if (SHADERS[wanted] != WORDS_SHADER) {
+                wordLayer?.clear()
+                glyphs?.clear()
+            }
         }
 
         val shader = program ?: return
