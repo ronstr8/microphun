@@ -25,6 +25,15 @@ These are hard limits, not preferences. They shaped the architecture.
   `SpeechTap` and [The `words` visual](#the-words-visual).
 - **The legacy `Visualizer` API is not an option.** 8-bit, 1024 bytes, and
   increasingly restricted on modern Android. The FFT here exists to avoid it.
+- **Casting the visual to a TV was tried and dropped.** The Presentation API
+  works — Android hands the app a real display for a Miracast receiver or an
+  HDMI adapter, and the visual renders natively on it. What does not work is
+  keeping it running: any shift of attention on the phone (the cast panel, the
+  notification shade, the screen locking) pauses the activity, which stops
+  capture and dismisses the presentation. Surviving that needs a foreground
+  service with `microphone` type, so the app would hold the microphone while it
+  is not on screen. That trade was declined on 2026-09-22 — the feature is not
+  worth the privacy posture. The work is parked in a git stash, not deleted.
 - **Xbox is not a near-term target.** Retail consoles sandbox apps with no
   loopback or system-audio capture API at all, and shipping requires ID@Xbox
   or a GDK partner licence. A console port would have to play its own audio.
