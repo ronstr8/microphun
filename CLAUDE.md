@@ -265,7 +265,10 @@ Four things about them are load-bearing:
   utterance.** The walk over a small corpus keeps coming back to the same few
   words; the first device session produced `this time uh while the this time`.
   The exemption comes from the data rather than a stop-word list: "the cat sat
-  on the mat" earns "the" a second use, and nothing earns "time" one.
+  on the mat" earns "the" a second use, and nothing earns "time" one. A run of
+  the same word counts as one use, so a stutter or a chant ("words words words",
+  "Howard Howard Howard") earns nothing; before that rule one such utterance
+  unlocked the word for every phrase after it.
 - **A phrase may never reproduce four consecutive words that were heard.**
   Three in a row is a coincidence; four is quoting someone onto a screen other
   people can see. `WordCorpus.GUARD_RUN` sets it, the guard is enforced during

@@ -32,7 +32,10 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
     /** Every run of [GUARD_RUN] words actually heard, for the replay guard. */
     private val runs = HashSet<String>()
 
-    /** Words someone used twice in one utterance, so a phrase may too. */
+    /**
+     * Words someone used twice in one utterance with something in between, so
+     * a phrase may too. A stutter or a chant does not count.
+     */
     private val repeated = HashSet<String>()
 
     private var heard = 0
@@ -83,9 +86,13 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
     fun word(index: Int): String = flat[index]
 
     /**
-     * True if someone used [word] twice in one breath. "The cat sat on the mat"
-     * earns "the" a second use in a phrase; nothing earns "time" one, which is
-     * what stops a small chain looping back round to where it started.
+     * True if someone used [word] twice in one breath, apart. "The cat sat on
+     * the mat" earns "the" a second use in a phrase; nothing earns "time" one,
+     * which is what stops a small chain looping back round to where it started.
+     *
+     * The two uses must not be adjacent. "Words words words" is a stutter or a
+     * chant, not a sentence that needs the word twice, and counting it let one
+     * repetitive utterance unlock repeats for every phrase after it.
      */
     fun repeatsWithin(word: String): Boolean = repeated.contains(word)
 
@@ -98,9 +105,12 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
         endings.add(utterance.last())
         flat.addAll(utterance)
 
+        // A run of the same word is one use, so only a return after something
+        // else counts: "hour to hour" does, "words words words" does not.
         val seen = HashSet<String>()
-        for (word in utterance) {
-            if (!seen.add(word)) repeated.add(word)
+        for (i in utterance.indices) {
+            if (i > 0 && utterance[i] == utterance[i - 1]) continue
+            if (!seen.add(utterance[i])) repeated.add(utterance[i])
         }
 
         for (i in utterance.indices) {

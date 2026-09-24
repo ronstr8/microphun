@@ -123,4 +123,19 @@ class WordCorpusTest {
         corpus.clear()
         assertFalse(corpus.repeatsWithin("the"))
     }
+
+    @Test
+    fun `a stutter does not earn a repeat, a word used apart does`() {
+        val corpus = WordCorpus()
+        // From the second device session, where the stutter unlocked "words"
+        // for every phrase: "words howard for a to take words".
+        corpus.add(listOf("words", "words", "words", "i'm", "going", "to", "take", "howard"))
+        corpus.add(listOf("howard", "howard", "howard"))
+        corpus.add(listOf("hour", "to", "hour", "to", "hour"))
+
+        assertFalse("adjacent only", corpus.repeatsWithin("words"))
+        assertFalse("adjacent only", corpus.repeatsWithin("howard"))
+        assertTrue("apart, with a word between", corpus.repeatsWithin("hour"))
+        assertTrue(corpus.repeatsWithin("to"))
+    }
 }
