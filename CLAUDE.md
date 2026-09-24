@@ -64,7 +64,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | Speech feed | `app/src/main/cpp/speech_tap.{h,cpp}` — resample to 16 kHz mono S16, write to a pipe; `speech_tap_test.cpp` is a host test, not in the CMake target |
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
-| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer` |
+| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer`, `SpiralLayer` + `SpiralFlow` |
 | Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it), `PhraseSource` (the GL thread's owner of both) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
@@ -97,7 +97,8 @@ substitutes the real value at load time so shaders never hardcode it.
 
 Existing shaders: `kaleidoscope` (mirrored wedges, the default), `plasma`
 (layered sine field), `tunnel` (polar perspective), `spectrum` (mirrored
-radial bars), `words` (a dark backdrop under the word cloud — see below).
+radial bars), `words` (a dark backdrop under the word cloud — see below),
+`spiral` (invented phrases spilling out along a spiral — see below).
 
 ## The `words` visual
 
@@ -133,7 +134,8 @@ visual.
 - Blending is premultiplied (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`) because `Canvas`
   bitmaps are premultiplied. `text.frag` keeps its output premultiplied to match.
 
-Speech recognition only runs while this visual is on screen —
+Speech recognition only runs while a visual that listens is on screen —
+`VisualizerRenderer.SPEECH_SHADERS`, which is `words` and `spiral`.
 `MainActivity.syncListener` starts and stops it on every shader change, and
 `onPause` stops it like capture.
 
@@ -238,6 +240,51 @@ Three things about it are deliberate:
   the drawing is, so the face and the mesh survive; a flat silhouette of this
   character is an unreadable blob.
 
+## The `spiral` visual
+
+The second visual that listens. While the room is still filling the corpus it
+throbs to the words; once the corpus can be recombined, every utterance the room
+finishes sends one invented phrase spilling out of the centre, a word at a time,
+to ride a spiral outward, growing, until it falls off the screen.
+
+| Piece | Job |
+| --- | --- |
+| `SpiralFlow` | Pure layout, no GL: phrases queued, released, moved, retired, and each word placed. Host-tested. |
+| `SpiralLayer` | Drains the words (for the throb), invents a phrase per utterance, advances the beat-driven state, draws the words. |
+| `spiral.frag` | Backdrop: the throbbing heart while filling, the spiral's arm once phrases flow, crossfaded by `uFlow`. |
+
+Things that are deliberate:
+
+- **The curve is a logarithmic spiral.** Its turns are spaced in proportion to
+  radius, so words that grow in proportion to radius never hit the turn inside
+  them. And measured in ρ = ln(r / spawn radius), a word's length along the
+  curve is the same at every radius, so a phrase is a rigid run of intervals in
+  ρ and moving it is one addition. `spiral.frag` draws its arm from the same
+  formula, so words sit on it.
+- **It opens 2.2× per turn.** At 1.6× it wound so tight that on the device the
+  backdrop read as concentric rings — a tunnel, not a spiral. The arm band is
+  narrow for the same reason: a wide soft band blurs one turn into the next.
+- **Phrases read from the outside in.** The first word leads out of the
+  centre, so each word, and the text inside it, reads back along the curve
+  towards the middle. Text is upright across the top and upside down across the
+  bottom; that is what text on a turning spiral does.
+- **The spiral counter-turns.** Riding the curve outward would whirl the words
+  round at over 2 rad/s; `SpiralFlow.COUNTER_SPIN` turns three quarters of that
+  away. The words drift slowly round, and the arm appears to stream outward
+  with them, which is what makes it read as falling in. Bass leans on the spin
+  and onsets kick it and the colour.
+- **Phrases never overlap.** The next one leaves the centre only once the one
+  ahead has cleared it. The queue is three deep and drops its oldest: a burst of
+  conversation outruns a spiral, and a phrase from a minute ago is not worth
+  the wait.
+- **The filling state has to be obvious.** The first version was a faint dot
+  with a throb that decayed in a third of a second, and on the device it read
+  as nothing happening at all. The heart now fills out with the corpus, and
+  every word kicks a throb that lasts about a second plus a ripple outward.
+
+`text.vert` takes a `uRotation` for this; the word cloud never sets it, so its
+words stay level.
+
 ## Inventing phrases
 
 `WordCorpus` keeps what the room has said and `MarkovChain` recombines it. Both
@@ -293,12 +340,13 @@ How the corpus is fed:
   whoever feeds it.
 - **It lives on the GL thread.** `WordCorpus` is not thread safe, so rather than
   lock it, utterances cross through `WordStream` like words do and
-  `PhraseSource` drains them once per frame. The renderer owns it and clears it
-  with the word cloud: on leaving the visual, and when the surface is recreated
-  after the app has been away.
-- Nothing draws phrases yet. Debug builds log one invented phrase per new
-  utterance under the `microphun.phrases` tag, which is the way to see the chain
-  working on a device until the spiral visual exists.
+  `PhraseSource` drains them once per frame. The renderer owns it. It survives a
+  move between `words` and `spiral` — talk in one, watch the other — and is
+  cleared once neither is on screen, and when the surface is recreated after
+  the app has been away.
+- Debug builds log what the chain makes under the `microphun.phrases` tag: one
+  invented phrase per utterance in `words`, which shows none, and each phrase
+  `spiral` actually spills.
 
 Phrases also prefer to stop on a word that ended something the room said, by
 walking a little past the target length and then trimming back. Without it about
@@ -462,6 +510,12 @@ on 2026-09-20:
   in the room was transcribed as utterances too — by design, the recogniser
   hears what the microphone hears — along with a run of empty final results,
   which the corpus ignores.
+- **The spiral runs on the device** (2026-09-24, first version). The shader
+  compiled on Adreno, and ten utterances each sent a phrase out: five phrases
+  on screen at once, in order along the curve, reading outside in, retiring
+  off the edge. That run also produced the two fixes above — a spiral opened
+  from 1.6× to 2.2× per turn, and a louder filling state — and those have
+  *not* yet been seen on the device.
 
 Known rough edges:
 

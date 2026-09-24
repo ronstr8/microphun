@@ -21,9 +21,10 @@ import javax.microedition.khronos.opengles.GL10
  * uniforms. All the visual character lives in the fragment shaders under
  * `assets/shaders/`; this class only plumbs.
  *
- * The [WORDS_SHADER] visual is the one exception: its backdrop is a fragment
- * shader like any other, but recognised words are drawn over it afterwards by
- * [WordLayer], which needs geometry and textures a single triangle cannot give.
+ * The [SPEECH_SHADERS] are the exception: their backdrops are fragment shaders
+ * like any other, but words are drawn over them afterwards — recognised words
+ * by [WordLayer], invented phrases by [SpiralLayer] — which needs geometry and
+ * textures a single triangle cannot give.
  */
 class VisualizerRenderer(
     private val assets: AssetManager,
@@ -35,6 +36,7 @@ class VisualizerRenderer(
     private lateinit var vertices: FloatBuffer
 
     private var wordLayer: WordLayer? = null
+    private var spiralLayer: SpiralLayer? = null
 
     // Shared so a word costs one rasterisation however many layouts show it.
     private var glyphs: GlyphCache? = null
@@ -88,6 +90,7 @@ class VisualizerRenderer(
         val cache = GlyphCache()
         glyphs = cache
         wordLayer = WordLayer(assets, words, cache).apply { create() }
+        spiralLayer = SpiralLayer(assets, words, cache, phrases).apply { create() }
         // Not a GL resource, but it goes with the word cloud: a surface is only
         // recreated after the app has been away, and the session it belonged
         // to is over.
@@ -105,12 +108,15 @@ class VisualizerRenderer(
         if (wanted != currentShader) {
             loadShader(wanted)
             currentShader = wanted
-            // Leaving the word cloud discards it; coming back starts empty
-            // rather than with whatever the room said minutes ago. The glyph
-            // textures go with it, since nothing else is using them, and so
-            // does the corpus: nothing outlives the visual that collected it.
-            if (SHADERS[wanted] != WORDS_SHADER) {
-                wordLayer?.clear()
+            // Leaving a visual discards what it had on screen; coming back
+            // starts empty rather than with whatever the room said minutes ago.
+            // The glyph textures and the corpus survive a move between the two
+            // speech visuals — talk in one, then watch the other spiral — and
+            // go once neither is up: nothing outlives the visuals that listened.
+            val name = SHADERS[wanted]
+            if (name != WORDS_SHADER) wordLayer?.clear()
+            if (name != SPIRAL_SHADER) spiralLayer?.clear()
+            if (name !in SPEECH_SHADERS) {
                 glyphs?.clear()
                 phrases.clear()
             }
@@ -123,6 +129,12 @@ class VisualizerRenderer(
         val dt = ((now - lastFrameMillis) / 1000f).coerceIn(0f, MAX_DELTA_SECONDS)
         lastFrameMillis = now
 
+        val name = SHADERS[currentShader]
+        if (name in SPEECH_SHADERS) {
+            val arrived = collectPhrases(logging = name == WORDS_SHADER)
+            if (name == SPIRAL_SHADER) spiralLayer?.update(frame, dt, arrived, width, height)
+        }
+
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         shader.use()
 
@@ -134,6 +146,7 @@ class VisualizerRenderer(
         shader.set("uTreble", frame.treble)
         shader.set("uOnset", frame.onset)
         shader.setArray("uBands", frame.bands)
+        if (name == SPIRAL_SHADER) spiralLayer?.bindBackdrop(shader)
 
         val position = shader.attribute("aPosition")
         GLES30.glEnableVertexAttribArray(position)
@@ -141,18 +154,22 @@ class VisualizerRenderer(
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         GLES30.glDisableVertexAttribArray(position)
 
-        if (SHADERS[currentShader] == WORDS_SHADER) {
-            collectPhrases()
-            wordLayer?.draw(frame, dt, width, height)
+        when (name) {
+            WORDS_SHADER -> wordLayer?.draw(frame, dt, width, height)
+            SPIRAL_SHADER -> spiralLayer?.draw(frame, width, height)
         }
     }
 
-    private fun collectPhrases() {
-        if (phrases.collect(words) == 0 || !BuildConfig.DEBUG) return
-        // Nothing draws phrases yet, so the log is the only way to see the
-        // chain working on a device.
-        val phrase = phrases.generate()?.joinToString(" ") ?: "(corpus too thin)"
-        Log.d(TAG, "corpus ${phrases.words} words, invented: $phrase")
+    /** Moves new utterances into the corpus; returns how many arrived. */
+    private fun collectPhrases(logging: Boolean): Int {
+        val arrived = phrases.collect(words)
+        if (arrived > 0 && logging && BuildConfig.DEBUG) {
+            // The word cloud shows no phrases, so in that visual the log is the
+            // way to see the chain working. The spiral logs what it spills.
+            val phrase = phrases.generate()?.joinToString(" ") ?: "(corpus too thin)"
+            Log.d(TAG, "corpus ${phrases.words} words, invented: $phrase")
+        }
+        return arrived
     }
 
     private fun loadShader(index: Int) {
@@ -168,10 +185,13 @@ class VisualizerRenderer(
 
     companion object {
         /** Fragment shaders in `assets/shaders/`, without the extension. */
-        val SHADERS = listOf("kaleidoscope", "plasma", "tunnel", "spectrum", "words")
+        val SHADERS = listOf("kaleidoscope", "plasma", "tunnel", "spectrum", "words", "spiral")
 
-        /** The one visual that also needs speech recognition running. */
         const val WORDS_SHADER = "words"
+        const val SPIRAL_SHADER = "spiral"
+
+        /** The visuals that need speech recognition running. */
+        val SPEECH_SHADERS = setOf(WORDS_SHADER, SPIRAL_SHADER)
 
         /** Substituted so the shaders never hardcode the band count. */
         private const val TAG = "microphun.phrases"

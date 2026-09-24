@@ -8,7 +8,7 @@ import java.util.concurrent.ArrayBlockingQueue
  * The same rule as the audio path applies: the producer never blocks and never
  * allocates unboundedly. Words arrive on the main thread as the recogniser
  * revises its hypothesis and are drained once per rendered frame. If the
- * consumer is not running — any visual other than `words` — the queue fills
+ * consumer is not running — any visual that does not listen — the queue fills
  * and new words are dropped rather than queued up for a burst later.
  *
  * Whole utterances travel separately, for [WordCorpus]. They are not the same

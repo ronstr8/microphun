@@ -20,7 +20,7 @@ import java.io.IOException
 import java.util.Locale
 
 /**
- * Continuous word capture for the `words` visual: settled words one at a time
+ * Continuous word capture for the speech visuals: settled words one at a time
  * for the word cloud, and whole utterances for [WordCorpus].
  *
  * The recogniser is a separate app, and Android hands the microphone to one

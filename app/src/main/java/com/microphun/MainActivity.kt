@@ -159,7 +159,7 @@ class MainActivity : AppCompatActivity() {
      * label explains why the backdrop went still.
      */
     private fun syncListener(name: String?) {
-        if (name != VisualizerRenderer.WORDS_SHADER || !micGranted) {
+        if (name !in VisualizerRenderer.SPEECH_SHADERS || !micGranted) {
             listener.stop()
             return
         }
