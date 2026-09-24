@@ -90,4 +90,37 @@ class WordCorpusTest {
         assertTrue(corpus.successorsOf("one").isEmpty())
         assertFalse(corpus.heardRun(listOf("one", "two", "three", "four")))
     }
+
+    @Test
+    fun `fillers are dropped before indexing`() {
+        val corpus = WordCorpus()
+        corpus.add(listOf("uh", "while", "the", "um", "cookies", "cool"))
+
+        assertEquals(4, corpus.words)
+        assertEquals("while", corpus.opening(0))
+        assertEquals(listOf("cookies"), corpus.successorsOf("the").map { it.word })
+    }
+
+    @Test
+    fun `an utterance of nothing but fillers is not an utterance`() {
+        val corpus = WordCorpus()
+        corpus.add(listOf("um", "uh", "hmm"))
+
+        assertEquals(0, corpus.words)
+        assertEquals(0, corpus.utteranceCount)
+    }
+
+    @Test
+    fun `a word repeated within one utterance may repeat, one repeated across them may not`() {
+        val corpus = WordCorpus()
+        corpus.add(listOf("the", "cat", "sat", "on", "the", "mat"))
+        corpus.add(listOf("this", "time"))
+        corpus.add(listOf("next", "time"))
+
+        assertTrue(corpus.repeatsWithin("the"))
+        assertFalse("heard twice, but never twice in one breath", corpus.repeatsWithin("time"))
+
+        corpus.clear()
+        assertFalse(corpus.repeatsWithin("the"))
+    }
 }

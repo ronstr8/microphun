@@ -168,4 +168,35 @@ class MarkovChainTest {
             }
         }
     }
+
+    @Test
+    fun `a phrase repeats a word only if someone did in one utterance`() {
+        // Shaped like the first session on a device: short, overlapping
+        // utterances, where the walk kept looping back ("this time uh while
+        // the this time"). "and" is said twice in one breath, so it may repeat.
+        val corpus = corpusOf(
+            "now we are catching words",
+            "do you believe it",
+            "yes i do",
+            "how about you",
+            "i like monsters and more monsters and dragons",
+            "this is the explanation for monsters",
+            "we can go out and walk",
+            "while the cookies are cooling",
+            "this time",
+            "i have time",
+        )
+        var checked = 0
+        repeat(500) { seed ->
+            val phrase = MarkovChain(corpus, Random(seed.toLong())).generate() ?: return@repeat
+            checked++
+            phrase.groupingBy { it }.eachCount()
+                .filter { it.value > 1 }
+                .keys
+                .forEach { word ->
+                    assertTrue("unearned repeat of '$word' in $phrase", corpus.repeatsWithin(word))
+                }
+        }
+        assertTrue("too few phrases to mean anything: $checked", checked > 400)
+    }
 }

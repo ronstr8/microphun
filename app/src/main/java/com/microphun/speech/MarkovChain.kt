@@ -7,13 +7,16 @@ import kotlin.random.Random
  *
  * A plain order-1 chain over a corpus this small is nearly deterministic: with
  * a few hundred words of speech most pairs are seen exactly once, so "walking"
- * it just replays the input until it reaches a word with two successors. Three
+ * it just replays the input until it reaches a word with two successors. Four
  * things keep it from being an echo:
  *
  *  - **Backoff.** When a word has only one successor, sometimes ignore it and
  *    jump somewhere else in the corpus. This is where recombination comes from.
  *  - **Recency.** Successors heard recently are likelier than ones from the
  *    start of the session, so the chain drifts as the conversation drifts.
+ *  - **No looping.** A word appears once per phrase unless someone used it
+ *    twice in one utterance. Over a small corpus the walk keeps coming back to
+ *    the same few words, and "this time uh while the this time" is the result.
  *  - **A replay guard.** A phrase may never reproduce [WordCorpus.GUARD_RUN]
  *    consecutive words that were actually heard. Three words in a row is a
  *    coincidence; four is quoting someone at a screen other people can see.
@@ -96,7 +99,9 @@ class MarkovChain(
     }
 
     private fun rejected(phrase: List<String>, last: String, candidate: String): Boolean =
-        candidate == last || corpus.heardRun(phrase + candidate)
+        candidate == last ||
+            (candidate in phrase && !corpus.repeatsWithin(candidate)) ||
+            corpus.heardRun(phrase + candidate)
 
     /** Picks a successor, favouring ones heard recently. */
     private fun weighted(options: List<WordCorpus.Successor>): String {

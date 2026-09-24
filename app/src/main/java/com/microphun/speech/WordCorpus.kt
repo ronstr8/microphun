@@ -32,12 +32,18 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
     /** Every run of [GUARD_RUN] words actually heard, for the replay guard. */
     private val runs = HashSet<String>()
 
+    /** Words someone used twice in one utterance, so a phrase may too. */
+    private val repeated = HashSet<String>()
+
     private var heard = 0
 
     val words: Int get() = flat.size
     val utteranceCount: Int get() = utterances.size
 
-    fun add(utterance: List<String>) {
+    fun add(said: List<String>) {
+        // Hesitations are transcribed faithfully, and a chain replays them
+        // mid-phrase as if they were words.
+        val utterance = said.filterNot { it in FILLERS }
         if (utterance.isEmpty()) return
 
         utterances.add(utterance)
@@ -61,6 +67,7 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
         endings.clear()
         flat.clear()
         runs.clear()
+        repeated.clear()
         heard = 0
     }
 
@@ -75,6 +82,13 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
 
     fun word(index: Int): String = flat[index]
 
+    /**
+     * True if someone used [word] twice in one breath. "The cat sat on the mat"
+     * earns "the" a second use in a phrase; nothing earns "time" one, which is
+     * what stops a small chain looping back round to where it started.
+     */
+    fun repeatsWithin(word: String): Boolean = repeated.contains(word)
+
     /** True if these words were heard in this order, consecutively. */
     fun heardRun(run: List<String>): Boolean =
         run.size >= GUARD_RUN && runs.contains(run.takeLast(GUARD_RUN).joinToString(" "))
@@ -83,6 +97,11 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
         openings.add(utterance.first())
         endings.add(utterance.last())
         flat.addAll(utterance)
+
+        val seen = HashSet<String>()
+        for (word in utterance) {
+            if (!seen.add(word)) repeated.add(word)
+        }
 
         for (i in utterance.indices) {
             if (i + 1 < utterance.size) {
@@ -100,6 +119,7 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
         openings.clear()
         endings.clear()
         runs.clear()
+        repeated.clear()
         flat.clear()
         utterances.forEachIndexed { sequence, utterance -> index(utterance, sequence) }
         heard = utterances.size
@@ -117,5 +137,11 @@ class WordCorpus(private val maxWords: Int = MAX_WORDS) {
         const val GUARD_RUN = 4
 
         private const val KEEP_FRACTION = 0.8
+
+        /**
+         * Hesitations, not words. Only the sounds themselves: "like" and "you
+         * know" fill gaps too, but they are also real words.
+         */
+        val FILLERS = setOf("uh", "um", "umm", "uhm", "er", "erm", "ah", "hmm", "hm", "mm", "mhm")
     }
 }

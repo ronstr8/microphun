@@ -261,6 +261,11 @@ Four things about them are load-bearing:
   backoff (ignore a lone successor sometimes and jump elsewhere), recency
   weighting (recent successors are likelier, so the chain drifts with the
   conversation), and a cap of 3–7 words.
+- **A phrase uses a word once, unless someone used it twice in one
+  utterance.** The walk over a small corpus keeps coming back to the same few
+  words; the first device session produced `this time uh while the this time`.
+  The exemption comes from the data rather than a stop-word list: "the cat sat
+  on the mat" earns "the" a second use, and nothing earns "time" one.
 - **A phrase may never reproduce four consecutive words that were heard.**
   Three in a row is a coincidence; four is quoting someone onto a screen other
   people can see. `WordCorpus.GUARD_RUN` sets it, the guard is enforced during
@@ -277,6 +282,10 @@ How the corpus is fed:
   where the screen got `voltage that`.
 - **It keeps one-letter words.** The word cloud drops "a" and "I" as noise;
   a phrase is read as a sentence, and "went to shop" reads as broken.
+- **It drops hesitations.** The recogniser transcribes "uh" and "um"
+  faithfully, and the chain replays them mid-phrase as if they were words.
+  `WordCorpus.FILLERS` lists the sounds only; "like" and "you know" fill gaps
+  too, but they are also real words. The word cloud still shows them.
 - **It lives on the GL thread.** `WordCorpus` is not thread safe, so rather than
   lock it, utterances cross through `WordStream` like words do and
   `PhraseSource` drains them once per frame. The renderer owns it and clears it
@@ -357,6 +366,7 @@ Toolchain (all user-local, nothing installed system-wide, no sudo):
 | Android SDK | platform 35, build-tools 35.0.0 | `~/Android/Sdk` |
 | NDK | 27.3.13750724 (pinned in `app/build.gradle.kts`) | `~/Android/Sdk/ndk` |
 | CMake | 3.22.1 | `~/Android/Sdk/cmake` |
+| adb | platform-tools | `~/Android/Sdk/platform-tools/adb` — **not on `PATH`**; call it by full path or `export PATH=$PATH:~/Android/Sdk/platform-tools` first |
 
 ```bash
 ./gradlew :app:assembleDebug     # -> app/build/outputs/apk/debug/app-debug.apk
@@ -440,6 +450,13 @@ on 2026-09-20:
 - The DSP is independently correct. Compiled and tested on the host: a 1 kHz
   sine peaks at bin 43 (1007 Hz), lands in band 13 of 24, reports `bass` and
   `treble` at zero, and silence produces zero across the board.
+- **The corpus fills from speech on the device** (2026-09-24). Eleven
+  utterances over one segmented session reached the corpus from their final
+  hypotheses, and each produced an invented phrase in the `microphun.phrases`
+  log. The audio policy log again showed only our input opened. Music playing
+  in the room was transcribed as utterances too — by design, the recogniser
+  hears what the microphone hears — along with a run of empty final results,
+  which the corpus ignores.
 
 Known rough edges:
 
