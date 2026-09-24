@@ -20,7 +20,8 @@ import java.io.IOException
 import java.util.Locale
 
 /**
- * Continuous word capture for the `words` visual.
+ * Continuous word capture for the `words` visual: settled words one at a time
+ * for the word cloud, and whole utterances for [WordCorpus].
  *
  * The recogniser is a separate app, and Android hands the microphone to one
  * capture at a time, so letting it open its own input would silence ours and
@@ -265,6 +266,10 @@ class WordListener(
      * every token but the last. On a final result the last one has settled too.
      * The cost is that a word appears once the next one begins, or at the end
      * of the utterance if it is the last.
+     *
+     * A final result is also the end of an utterance, which goes to the sink
+     * whole for [WordCorpus]. That is the recogniser's last word on what was
+     * said, so it has the revisions the word-by-word stream could not make.
      */
     private fun emit(results: Bundle?, final: Boolean): Boolean {
         val hypothesis = results
@@ -276,7 +281,9 @@ class WordListener(
             Log.d(TAG, "${if (final) "final  " else "partial"}: $hypothesis")
         }
 
-        val tokens = tokenise(hypothesis)
+        if (final) sink.offerUtterance(tokenise(hypothesis, MIN_CORPUS_WORD_LENGTH))
+
+        val tokens = tokenise(hypothesis, MIN_WORD_LENGTH)
         val settled = if (final) tokens.size else tokens.size - 1
         for (i in emittedCount until settled) {
             sink.offer(tokens[i])
@@ -287,10 +294,10 @@ class WordListener(
         return tokens.isNotEmpty()
     }
 
-    private fun tokenise(text: String): List<String> =
+    private fun tokenise(text: String, minLength: Int): List<String> =
         SEPARATOR.split(text.lowercase(Locale.getDefault()))
             .mapNotNull { token ->
-                token.trim('\'').takeIf { it.length >= MIN_WORD_LENGTH }
+                token.trim('\'').takeIf { it.length >= minLength }
             }
 
     private fun ParcelFileDescriptor.closeQuietly() {
@@ -390,6 +397,12 @@ class WordListener(
 
         /** "a" and "I" are noise on screen; two letters is the floor. */
         const val MIN_WORD_LENGTH = 2
+
+        /**
+         * The corpus keeps them. A phrase is read as a sentence, not a scatter,
+         * and "went to shop" reads as broken where "went to a shop" does not.
+         */
+        const val MIN_CORPUS_WORD_LENGTH = 1
 
         const val MIN_RESTART_MILLIS = 120L
         const val MAX_RESTART_MILLIS = 4_000L

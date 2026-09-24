@@ -4,7 +4,10 @@ import android.content.res.AssetManager
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.os.SystemClock
+import android.util.Log
+import com.microphun.BuildConfig
 import com.microphun.audio.AudioEngine
+import com.microphun.speech.PhraseSource
 import com.microphun.speech.WordStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -35,6 +38,9 @@ class VisualizerRenderer(
 
     // Shared so a word costs one rasterisation however many layouts show it.
     private var glyphs: GlyphCache? = null
+
+    // What the room said, kept on this thread because this is where it is read.
+    private val phrases = PhraseSource()
 
     private var width = 1f
     private var height = 1f
@@ -82,6 +88,10 @@ class VisualizerRenderer(
         val cache = GlyphCache()
         glyphs = cache
         wordLayer = WordLayer(assets, words, cache).apply { create() }
+        // Not a GL resource, but it goes with the word cloud: a surface is only
+        // recreated after the app has been away, and the session it belonged
+        // to is over.
+        phrases.clear()
     }
 
     override fun onSurfaceChanged(unused: GL10?, w: Int, h: Int) {
@@ -97,10 +107,12 @@ class VisualizerRenderer(
             currentShader = wanted
             // Leaving the word cloud discards it; coming back starts empty
             // rather than with whatever the room said minutes ago. The glyph
-            // textures go with it, since nothing else is using them.
+            // textures go with it, since nothing else is using them, and so
+            // does the corpus: nothing outlives the visual that collected it.
             if (SHADERS[wanted] != WORDS_SHADER) {
                 wordLayer?.clear()
                 glyphs?.clear()
+                phrases.clear()
             }
         }
 
@@ -130,8 +142,17 @@ class VisualizerRenderer(
         GLES30.glDisableVertexAttribArray(position)
 
         if (SHADERS[currentShader] == WORDS_SHADER) {
+            collectPhrases()
             wordLayer?.draw(frame, dt, width, height)
         }
+    }
+
+    private fun collectPhrases() {
+        if (phrases.collect(words) == 0 || !BuildConfig.DEBUG) return
+        // Nothing draws phrases yet, so the log is the only way to see the
+        // chain working on a device.
+        val phrase = phrases.generate()?.joinToString(" ") ?: "(corpus too thin)"
+        Log.d(TAG, "corpus ${phrases.words} words, invented: $phrase")
     }
 
     private fun loadShader(index: Int) {
@@ -153,6 +174,8 @@ class VisualizerRenderer(
         const val WORDS_SHADER = "words"
 
         /** Substituted so the shaders never hardcode the band count. */
+        private const val TAG = "microphun.phrases"
+
         private const val BAND_COUNT_TOKEN = "\$BAND_COUNT"
 
         /**

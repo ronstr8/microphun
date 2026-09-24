@@ -65,7 +65,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
 | Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer` |
-| Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it) |
+| Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it), `PhraseSource` (the GL thread's owner of both) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
 
@@ -267,6 +267,24 @@ Four things about them are load-bearing:
   generation rather than by rejection afterwards, and a test walks 500 seeds
   against a corpus that is one long deterministic chain — the worst case — to
   prove it holds.
+
+How the corpus is fed:
+
+- **From the final hypothesis, not the settled-word stream.** Each final
+  result (`onResults` or `onSegmentResults`) goes to `WordStream` whole, through
+  a second bounded queue beside the words. The final text carries the
+  revisions the word cloud cannot take back, so the corpus gets `voltage works`
+  where the screen got `voltage that`.
+- **It keeps one-letter words.** The word cloud drops "a" and "I" as noise;
+  a phrase is read as a sentence, and "went to shop" reads as broken.
+- **It lives on the GL thread.** `WordCorpus` is not thread safe, so rather than
+  lock it, utterances cross through `WordStream` like words do and
+  `PhraseSource` drains them once per frame. The renderer owns it and clears it
+  with the word cloud: on leaving the visual, and when the surface is recreated
+  after the app has been away.
+- Nothing draws phrases yet. Debug builds log one invented phrase per new
+  utterance under the `microphun.phrases` tag, which is the way to see the chain
+  working on a device until the spiral visual exists.
 
 Phrases also prefer to stop on a word that ended something the room said, by
 walking a little past the target length and then trimming back. Without it about
