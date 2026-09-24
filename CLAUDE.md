@@ -64,7 +64,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | Speech feed | `app/src/main/cpp/speech_tap.{h,cpp}` — resample to 16 kHz mono S16, write to a pipe; `speech_tap_test.cpp` is a host test, not in the CMake target |
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
-| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer`, `SpiralLayer` + `SpiralFlow` |
+| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer`, `SpiralLayer` + `SpiralFlow`, `FireLayer` + `BurnCycle` + `PhotoSource` |
 | Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it), `PhraseSource` (the GL thread's owner of both) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
@@ -98,7 +98,8 @@ substitutes the real value at load time so shaders never hardcode it.
 Existing shaders: `kaleidoscope` (mirrored wedges, the default), `plasma`
 (layered sine field), `tunnel` (polar perspective), `spectrum` (mirrored
 radial bars), `words` (a dark backdrop under the word cloud — see below),
-`spiral` (invented phrases spilling out along a spiral — see below).
+`spiral` (invented phrases spilling out along a spiral — see below), `fire`
+(an image burning in from the edges on the beat — see below).
 
 ## The `words` visual
 
@@ -292,6 +293,39 @@ Things that are deliberate:
 `text.vert` takes a `uRotation` for this; the word cloud never sets it, so its
 words stay level.
 
+## The `fire` visual
+
+An image burns in from the edges, faster and fiercer with the beat, until the
+fire reaches the centre and the image poofs away into the next one. It does
+not listen for speech; it only needs the beat.
+
+| Piece | Job |
+| --- | --- |
+| `BurnCycle` | Pure clock, no GL: how far the burn has got, when to swap, which source the round uses. Host-tested. |
+| `FireLayer` | Fetches each round's image — rendering another visual offscreen, or uploading a photo — and feeds the backdrop. |
+| `PhotoSource` | Photos the user picked, remembered across launches, decoded one ahead on a worker thread. |
+| `fire.frag` | The burn: a noisy front closing on the centre, flames, scorch and shimmer ahead of it, char and embers behind, the poof. |
+
+- **Rounds alternate between a visual and a photo.** The visual is a
+  screenshot of the app, taken of a visual that is not on screen: one frame of
+  `kaleidoscope`, `plasma`, `tunnel` or `spectrum`, rendered into a framebuffer
+  at a random moment of its own time with the live audio. The audio is floored
+  so a silent room still gives an image worth burning. `words` and `spiral` are
+  left out: without their text their backdrops are nearly empty.
+- **Photos come from the system photo picker** — long-press while the fire is
+  up. microphun holds no storage permission: it gets read access to exactly
+  the photos chosen, keeps it across launches with a persistable grant, and
+  remembers the choice in `SharedPreferences`. The choice is a setting the user
+  made, unlike anything heard, so it is kept; the photos are only ever read.
+  A photo that stops opening is dropped. If the next photo is not decoded in
+  time, that round burns a visual instead of waiting.
+- **The burn only moves forward.** The level feeds it and onsets shove it; it
+  also creeps in silence, so a quiet room still gets a new image within 90
+  seconds.
+- **The front is a superellipse closing on the centre,** so the corners catch
+  first and the last thing to go is a point in the middle, roughened by noise
+  that drifts upward so the edge reads as flames rather than a wipe.
+
 ## Inventing phrases
 
 `WordCorpus` keeps what the room has said and `MarkovChain` recombines it. Both
@@ -377,6 +411,13 @@ half of them dangle on "the" or "by", which reads as broken rather than dreamy.
   order, and the FFT's does not.
 - Shaders are ES 3.0 (`#version 300 es`); the manifest requires ES 3.0 and the
   surface requests context version 3.
+- **Shader noise reads random values from a texture; it does not compute a
+  hash.** On the Adreno driver the usual float hash (`fract` of products)
+  showed every noise cell's edge as a seam — the compiler rounds the same
+  lattice corner differently in neighbouring cells, and the hash amplifies it —
+  and an integer hash came out nearly constant. `fire.frag` `texelFetch`es a
+  256×256 table of random bytes by integer coordinate instead, which is exact
+  and cheaper.
 - `AudioEngine` is `AutoCloseable` and owns a native pointer. Failing to
   `close()` leaks the Oboe stream.
 - Capture starts in `onResume` and stops in `onPause` — microphun never holds the
@@ -524,8 +565,14 @@ on 2026-09-20:
   from 1.6× to 2.2× per turn, and a louder filling state — and a second run
   confirmed both by screenshot: the backdrop reads as one spiral, and the
   heart and its ripples are plain to see from the first word.
+- **The fire burns on the device** (2026-09-24). The shader compiles on
+  Adreno, the offscreen snapshot works — rounds burned `kaleidoscope` and
+  `plasma` — and the front closes on the centre with flames, char and embers.
 
 Known rough edges:
+
+- The fire's photo path, its poof, and its pacing against real music have not
+  been watched on the device. Only the burn itself has been seen.
 
 - The spiral's smoothed spin and steady phrase feed are covered on the host
   but have not yet been watched on the device.

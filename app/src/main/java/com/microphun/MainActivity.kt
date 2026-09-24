@@ -10,6 +10,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -17,6 +18,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.microphun.audio.AudioEngine
+import com.microphun.gl.PhotoSource
 import com.microphun.gl.VisualizerRenderer
 import com.microphun.gl.VisualizerSurfaceView
 import com.microphun.speech.WordListener
@@ -27,9 +29,9 @@ import com.microphun.speech.WordStream
  *
  * Audio capture is started in [onResume] and stopped in [onPause] so microphun
  * never holds the mic while backgrounded. Speech recognition follows the same
- * rule and is narrower still: it only runs while the `words` visual is on
- * screen, since it is the only visual that has anything to do with it, and it
- * listens to our capture rather than opening the microphone itself.
+ * rule and is narrower still: it only runs while a visual that listens —
+ * `words` or `spiral` — is on screen, and it listens to our capture rather than
+ * opening the microphone itself.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -38,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var label: TextView
     private lateinit var words: WordStream
     private lateinit var listener: WordListener
+    private lateinit var photos: PhotoSource
 
     private var micGranted = false
 
@@ -53,6 +56,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The system photo picker: read access to exactly the photos chosen, and no
+     * storage permission. A cancelled pick changes nothing.
+     */
+    private val pickPhotos = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_PHOTOS),
+    ) { picked ->
+        if (picked.isEmpty()) return@registerForActivityResult
+        photos.choose(picked)
+        flashLabel(
+            resources.getQuantityString(R.plurals.fire_photos_chosen, picked.size, picked.size),
+            holdMillis = 2500,
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -65,7 +83,16 @@ class MainActivity : AppCompatActivity() {
         listener.onMicFallback = {
             flashLabel(getString(R.string.speech_took_mic), holdMillis = 3500)
         }
-        surface = VisualizerSurfaceView(this).apply { attach(audio, words) }
+        photos = PhotoSource(this)
+        surface = VisualizerSurfaceView(this).apply { attach(audio, words, photos) }
+
+        // Long press is only for the fire; anywhere else it falls through to a
+        // tap and cycles the visual as usual.
+        surface.setOnLongClickListener {
+            if (surface.currentShaderName() != VisualizerRenderer.FIRE_SHADER) return@setOnLongClickListener false
+            pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            true
+        }
 
         // The surface fills the window; the label floats over it and fades,
         // so the visual is never permanently obscured.
@@ -86,7 +113,11 @@ class MainActivity : AppCompatActivity() {
 
         surface.onShaderChanged = { name ->
             runOnUiThread {
-                flashLabel(name)
+                if (name == VisualizerRenderer.FIRE_SHADER) {
+                    flashLabel("$name — ${getString(R.string.fire_hint)}", holdMillis = 2500)
+                } else {
+                    flashLabel(name)
+                }
                 syncListener(name)
             }
         }
@@ -123,6 +154,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         listener.stop()
         audio.close()
+        photos.close()
         super.onDestroy()
     }
 
@@ -183,5 +215,10 @@ class MainActivity : AppCompatActivity() {
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+    }
+
+    private companion object {
+        /** Plenty for a night's rotation, and a cap the picker enforces for us. */
+        const val MAX_PHOTOS = 30
     }
 }

@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.microphun.BuildConfig
 import com.microphun.audio.AudioEngine
+import com.microphun.audio.AudioFrame
 import com.microphun.speech.PhraseSource
 import com.microphun.speech.WordStream
 import java.nio.ByteBuffer
@@ -15,21 +16,25 @@ import java.nio.FloatBuffer
 import java.util.concurrent.atomic.AtomicInteger
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.random.Random
 
 /**
  * Draws one fullscreen triangle per frame and feeds the audio analysis in as
  * uniforms. All the visual character lives in the fragment shaders under
  * `assets/shaders/`; this class only plumbs.
  *
- * The [SPEECH_SHADERS] are the exception: their backdrops are fragment shaders
- * like any other, but words are drawn over them afterwards — recognised words
- * by [WordLayer], invented phrases by [SpiralLayer] — which needs geometry and
- * textures a single triangle cannot give.
+ * The [SPEECH_SHADERS] and [FIRE_SHADER] are the exceptions. The fire's
+ * backdrop burns an image [FireLayer] supplies, which may be a frame of another
+ * visual rendered offscreen here. The [SPEECH_SHADERS] have backdrops that are
+ * fragment shaders like any other, but words are drawn over them afterwards —
+ * recognised words by [WordLayer], invented phrases by [SpiralLayer] — which
+ * needs geometry and textures a single triangle cannot give.
  */
 class VisualizerRenderer(
     private val assets: AssetManager,
     private val audio: AudioEngine,
     private val words: WordStream,
+    private val photos: PhotoSource,
 ) : GLSurfaceView.Renderer {
 
     private var program: ShaderProgram? = null
@@ -37,6 +42,11 @@ class VisualizerRenderer(
 
     private var wordLayer: WordLayer? = null
     private var spiralLayer: SpiralLayer? = null
+    private var fireLayer: FireLayer? = null
+
+    // Other visuals, compiled on demand for the fire to burn a frame of.
+    private val snapshotPrograms = HashMap<String, ShaderProgram>()
+    private val snapshotFrame = AudioFrame(FloatArray(AudioEngine.BAND_COUNT))
 
     // Shared so a word costs one rasterisation however many layouts show it.
     private var glyphs: GlyphCache? = null
@@ -91,6 +101,9 @@ class VisualizerRenderer(
         glyphs = cache
         wordLayer = WordLayer(assets, words, cache).apply { create() }
         spiralLayer = SpiralLayer(assets, words, cache, phrases).apply { create() }
+        fireLayer = FireLayer(photos)
+        // Programs from the old context are already gone with it.
+        snapshotPrograms.clear()
         // Not a GL resource, but it goes with the word cloud: a surface is only
         // recreated after the app has been away, and the session it belonged
         // to is over.
@@ -116,6 +129,7 @@ class VisualizerRenderer(
             val name = SHADERS[wanted]
             if (name != WORDS_SHADER) wordLayer?.clear()
             if (name != SPIRAL_SHADER) spiralLayer?.clear()
+            if (name != FIRE_SHADER) fireLayer?.clear()
             if (name !in SPEECH_SHADERS) {
                 glyphs?.clear()
                 phrases.clear()
@@ -134,25 +148,20 @@ class VisualizerRenderer(
             collectPhrases(logging = name == WORDS_SHADER)
             if (name == SPIRAL_SHADER) spiralLayer?.update(frame, dt, width, height)
         }
+        if (name == FIRE_SHADER) {
+            fireLayer?.update(frame, dt, width.toInt(), height.toInt()) { framebuffer, w, h ->
+                renderSnapshot(framebuffer, w, h, frame)
+            }
+        }
 
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         shader.use()
-
-        shader.set("uTime", (now - startMillis) / 1000f)
-        shader.set("uResolution", width, height)
-        shader.set("uLevel", frame.level)
-        shader.set("uBass", frame.bass)
-        shader.set("uMid", frame.mid)
-        shader.set("uTreble", frame.treble)
-        shader.set("uOnset", frame.onset)
-        shader.setArray("uBands", frame.bands)
-        if (name == SPIRAL_SHADER) spiralLayer?.bindBackdrop(shader)
-
-        val position = shader.attribute("aPosition")
-        GLES30.glEnableVertexAttribArray(position)
-        GLES30.glVertexAttribPointer(position, 2, GLES30.GL_FLOAT, false, 0, vertices)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
-        GLES30.glDisableVertexAttribArray(position)
+        setFrame(shader, frame, (now - startMillis) / 1000f, width, height)
+        when (name) {
+            SPIRAL_SHADER -> spiralLayer?.bindBackdrop(shader)
+            FIRE_SHADER -> fireLayer?.bindBackdrop(shader)
+        }
+        drawFullscreen(shader)
 
         when (name) {
             WORDS_SHADER -> wordLayer?.draw(frame, dt, width, height)
@@ -171,12 +180,69 @@ class VisualizerRenderer(
         }
     }
 
+    /** The uniforms every visual gets: see the `Frame` contract in CLAUDE.md. */
+    private fun setFrame(shader: ShaderProgram, frame: AudioFrame, time: Float, w: Float, h: Float) {
+        shader.set("uTime", time)
+        shader.set("uResolution", w, h)
+        shader.set("uLevel", frame.level)
+        shader.set("uBass", frame.bass)
+        shader.set("uMid", frame.mid)
+        shader.set("uTreble", frame.treble)
+        shader.set("uOnset", frame.onset)
+        shader.setArray("uBands", frame.bands)
+    }
+
+    private fun drawFullscreen(shader: ShaderProgram) {
+        val position = shader.attribute("aPosition")
+        GLES30.glEnableVertexAttribArray(position)
+        GLES30.glVertexAttribPointer(position, 2, GLES30.GL_FLOAT, false, 0, vertices)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glDisableVertexAttribArray(position)
+    }
+
+    /**
+     * Draws one frame of a random other visual into [framebuffer], for the fire
+     * to burn: a screenshot of the app, taken of a visual that is not on screen.
+     *
+     * A random moment of it, so the same visual never burns the same way twice,
+     * and never quieter than [SNAPSHOT_FLOOR]: most visuals go nearly black in
+     * a silent room, and a black image has nothing in it to burn.
+     */
+    private fun renderSnapshot(framebuffer: Int, w: Int, h: Int, live: AudioFrame) {
+        val name = SNAPSHOT_SOURCES.random()
+        val source = snapshotPrograms.getOrPut(name) { link(name) }
+
+        for (i in snapshotFrame.bands.indices) {
+            // A falling spectrum, roughly what music looks like, as the floor.
+            val floor = SNAPSHOT_FLOOR * (1f - 0.5f * i / snapshotFrame.bands.size) * (0.7f + 0.3f * Random.nextFloat())
+            snapshotFrame.bands[i] = maxOf(live.bands[i], floor)
+        }
+        snapshotFrame.level = maxOf(live.level, SNAPSHOT_FLOOR)
+        snapshotFrame.bass = maxOf(live.bass, SNAPSHOT_FLOOR)
+        snapshotFrame.mid = maxOf(live.mid, SNAPSHOT_FLOOR * 0.8f)
+        snapshotFrame.treble = maxOf(live.treble, SNAPSHOT_FLOOR * 0.6f)
+        snapshotFrame.onset = live.onset
+
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
+        GLES30.glViewport(0, 0, w, h)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        source.use()
+        setFrame(source, snapshotFrame, Random.nextFloat() * SNAPSHOT_TIME_RANGE, w.toFloat(), h.toFloat())
+        drawFullscreen(source)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, width.toInt(), height.toInt())
+    }
+
     private fun loadShader(index: Int) {
         program?.release()
+        program = link(SHADERS[index])
+    }
+
+    private fun link(name: String): ShaderProgram {
         val vertex = readAsset("shaders/fullscreen.vert")
-        val fragment = readAsset("shaders/${SHADERS[index]}.frag")
+        val fragment = readAsset("shaders/$name.frag")
             .replace(BAND_COUNT_TOKEN, AudioEngine.BAND_COUNT.toString())
-        program = ShaderProgram.link(vertex, fragment)
+        return ShaderProgram.link(vertex, fragment)
     }
 
     private fun readAsset(path: String): String =
@@ -184,17 +250,31 @@ class VisualizerRenderer(
 
     companion object {
         /** Fragment shaders in `assets/shaders/`, without the extension. */
-        val SHADERS = listOf("kaleidoscope", "plasma", "tunnel", "spectrum", "words", "spiral")
+        val SHADERS = listOf("kaleidoscope", "plasma", "tunnel", "spectrum", "words", "spiral", "fire")
 
         const val WORDS_SHADER = "words"
         const val SPIRAL_SHADER = "spiral"
+        const val FIRE_SHADER = "fire"
 
         /** The visuals that need speech recognition running. */
         val SPEECH_SHADERS = setOf(WORDS_SHADER, SPIRAL_SHADER)
 
-        /** Substituted so the shaders never hardcode the band count. */
+        /**
+         * What the fire can burn a frame of: the visuals that are complete as a
+         * shader alone. `words` and `spiral` are mostly the text drawn over
+         * them, and their backdrops alone are nearly empty.
+         */
+        private val SNAPSHOT_SOURCES = listOf("kaleidoscope", "plasma", "tunnel", "spectrum")
+
+        /** How lively a snapshot's audio is at least; the live frame wins above it. */
+        private const val SNAPSHOT_FLOOR = 0.55f
+
+        /** Seconds of each visual's own time a snapshot picks its moment from. */
+        private const val SNAPSHOT_TIME_RANGE = 600f
+
         private const val TAG = "microphun.phrases"
 
+        /** Substituted so the shaders never hardcode the band count. */
         private const val BAND_COUNT_TOKEN = "\$BAND_COUNT"
 
         /**

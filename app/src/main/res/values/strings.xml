@@ -5,4 +5,9 @@
     <string name="mic_denied">No microphone, no visuals. Grant the permission in Settings to continue.</string>
     <string name="speech_unavailable">No speech recogniser on this device, so the word cloud will stay empty.</string>
     <string name="speech_took_mic">Speech recognition took the microphone, so the backdrop will stay still while it listens.</string>
+    <string name="fire_hint">Hold to choose photos to burn</string>
+    <plurals name="fire_photos_chosen">
+        <item quantity="one">%d photo to burn, between the visuals</item>
+        <item quantity="other">%d photos to burn, between the visuals</item>
+    </plurals>
 </resources>

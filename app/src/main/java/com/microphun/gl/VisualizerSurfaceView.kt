@@ -6,7 +6,11 @@ import android.util.AttributeSet
 import com.microphun.audio.AudioEngine
 import com.microphun.speech.WordStream
 
-/** Full-screen ES 3.0 surface. Tap anywhere to cycle to the next visual. */
+/**
+ * Full-screen ES 3.0 surface. Tap anywhere to cycle to the next visual; a long
+ * press is left to [MainActivity][com.microphun.MainActivity], which uses it to
+ * pick photos while the fire is up.
+ */
 class VisualizerSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -26,9 +30,9 @@ class VisualizerSurfaceView @JvmOverloads constructor(
         isFocusable = true
     }
 
-    fun attach(audio: AudioEngine, words: WordStream) {
+    fun attach(audio: AudioEngine, words: WordStream, photos: PhotoSource) {
         setEGLContextClientVersion(3)
-        val created = VisualizerRenderer(context.assets, audio, words)
+        val created = VisualizerRenderer(context.assets, audio, words, photos)
         renderer = created
         setRenderer(created)
         renderMode = RENDERMODE_CONTINUOUSLY
