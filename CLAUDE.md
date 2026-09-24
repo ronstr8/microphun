@@ -243,14 +243,14 @@ Three things about it are deliberate:
 ## The `spiral` visual
 
 The second visual that listens. While the room is still filling the corpus it
-throbs to the words; once the corpus can be recombined, every utterance the room
-finishes sends one invented phrase spilling out of the centre, a word at a time,
-to ride a spiral outward, growing, until it falls off the screen.
+throbs to the words; once the corpus can be recombined, invented phrases stream
+out of the centre one after another, a word at a time, to ride a spiral
+outward, growing, until they fall off the screen.
 
 | Piece | Job |
 | --- | --- |
 | `SpiralFlow` | Pure layout, no GL: phrases queued, released, moved, retired, and each word placed. Host-tested. |
-| `SpiralLayer` | Drains the words (for the throb), invents a phrase per utterance, advances the beat-driven state, draws the words. |
+| `SpiralLayer` | Drains the words (for the throb), keeps a phrase waiting, advances the beat-driven state, draws the words. |
 | `spiral.frag` | Backdrop: the throbbing heart while filling, the spiral's arm once phrases flow, crossfaded by `uFlow`. |
 
 Things that are deliberate:
@@ -271,12 +271,19 @@ Things that are deliberate:
 - **The spiral counter-turns.** Riding the curve outward would whirl the words
   round at over 2 rad/s; `SpiralFlow.COUNTER_SPIN` turns three quarters of that
   away. The words drift slowly round, and the arm appears to stream outward
-  with them, which is what makes it read as falling in. Bass leans on the spin
-  and onsets kick it and the colour.
+  with them, which is what makes it read as falling in.
+- **The beat can only surge the spin, never stop it.** Bass and onsets scale
+  the counter-turn up by at most 60%, eased over about half a second
+  (`SpiralFlow.spinRate`). The first version added them outright, and an onset
+  could cancel the counter-turn and flip it: on the device the arm stalled, ran
+  backwards and snapped forward with every word. A host test drives the rule
+  with full-scale beats every other frame and checks it never reverses.
+- **Phrases stream steadily.** One always waits, so the next leaves the moment
+  the one ahead clears the centre. The first version sent one per utterance,
+  which left the spiral empty between them — gaps where nothing happened. With
+  only one waiting, what was just said reaches the phrase after next.
 - **Phrases never overlap.** The next one leaves the centre only once the one
-  ahead has cleared it. The queue is three deep and drops its oldest: a burst of
-  conversation outruns a spiral, and a phrase from a minute ago is not worth
-  the wait.
+  ahead has cleared it.
 - **The filling state has to be obvious.** The first version was a faint dot
   with a throb that decayed in a third of a second, and on the device it read
   as nothing happening at all. The heart now fills out with the corpus, and
@@ -514,10 +521,14 @@ on 2026-09-20:
   compiled on Adreno, and ten utterances each sent a phrase out: five phrases
   on screen at once, in order along the curve, reading outside in, retiring
   off the edge. That run also produced the two fixes above — a spiral opened
-  from 1.6× to 2.2× per turn, and a louder filling state — and those have
-  *not* yet been seen on the device.
+  from 1.6× to 2.2× per turn, and a louder filling state — and a second run
+  confirmed both by screenshot: the backdrop reads as one spiral, and the
+  heart and its ripples are plain to see from the first word.
 
 Known rough edges:
+
+- The spiral's smoothed spin and steady phrase feed are covered on the host
+  but have not yet been watched on the device.
 
 - `kaleidoscope` renders noticeably dimmer than `plasma` under identical
   audio. Its brightness floor (`0.3`) and radial vignette

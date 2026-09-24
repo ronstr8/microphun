@@ -21,9 +21,9 @@ import kotlin.math.min
  *
  * Until the corpus holds enough to invent from, there is nothing to say, so the
  * backdrop throbs to the words as they arrive and swells as the corpus fills.
- * After that, every utterance the room finishes sends one invented phrase out
- * of the centre; [SpiralFlow] places it, and the beat turns and colours the
- * spiral.
+ * After that, phrases stream out of the centre one after another for as long
+ * as the visual is up; [SpiralFlow] places them, and the beat turns and colours
+ * the spiral.
  *
  * Same shape as [WordLayer]: GL thread only, [WordStream] is the only state
  * shared with the recogniser, and glyphs are asked for on every frame they are
@@ -45,6 +45,7 @@ class SpiralLayer(
     private var wordAge = QUIET_AGE
     private var flowing = 0f
     private var spin = 0f
+    private var spinRate = SpiralFlow.COUNTER_SPIN
     private var travel = 0f
     private var hue = 0f
 
@@ -76,14 +77,14 @@ class SpiralLayer(
         throb = 0f
         wordAge = QUIET_AGE
         flowing = 0f
+        spinRate = SpiralFlow.COUNTER_SPIN
     }
 
     /**
-     * Advances everything by [dt] seconds. [arrived] is how many utterances
-     * reached the corpus this frame; each one sends a phrase out. Call before
-     * the backdrop is drawn, since [bindBackdrop] reads what this computes.
+     * Advances everything by [dt] seconds. Call before the backdrop is drawn,
+     * since [bindBackdrop] reads what this computes.
      */
-    fun update(frame: AudioFrame, dt: Float, arrived: Int, width: Float, height: Float) {
+    fun update(frame: AudioFrame, dt: Float, width: Float, height: Float) {
         // Each settled word is a beat of the conversation.
         wordAge = (wordAge + dt).coerceAtMost(QUIET_AGE)
         while (stream.poll() != null) {
@@ -92,17 +93,23 @@ class SpiralLayer(
         }
         throb = (throb - dt * THROB_DECAY_PER_SECOND).coerceAtLeast(0f)
 
-        repeat(arrived) { invent() }
+        // Always one phrase waiting, so the next leaves the moment the one
+        // ahead clears the centre. One phrase per utterance left the spiral
+        // empty between them; on the device that read as gaps where nothing
+        // happens. Only one waits, so what was just said is in the next phrase
+        // but one.
+        val ready = phrases.words >= MarkovChain.MIN_CORPUS
+        if (ready && flow.pendingCount == 0) invent()
 
         spawnRadius = min(width, height) * SPAWN_FRACTION
         val exitRadius = hypot(width, height) * 0.5f * EXIT_BEYOND_CORNER
         flow.advance(dt, ln(exitRadius / spawnRadius))
         travel += dt * SpiralFlow.SPEED
 
-        val ready = phrases.words >= MarkovChain.MIN_CORPUS
         flowing += ((if (ready) 1f else 0f) - flowing) * min(1f, dt * FLOW_EASE)
 
-        spin += dt * (SpiralFlow.COUNTER_SPIN + SPIN_BASS * frame.bass + SPIN_ONSET * frame.onset)
+        spinRate = SpiralFlow.spinRate(spinRate, frame.bass, frame.onset, dt)
+        spin += dt * spinRate
         hue += dt * (HUE_DRIFT + HUE_ONSET * frame.onset)
     }
 
@@ -206,9 +213,6 @@ class SpiralLayer(
         const val QUIET_AGE = 10f
         const val FLOW_EASE = 1.2f
 
-        /** Beat on top of the counter-spin: bass leans on it, onsets kick it. */
-        const val SPIN_BASS = 0.8f
-        const val SPIN_ONSET = 2.5f
 
         const val HUE_DRIFT = 0.015f
         const val HUE_ONSET = 0.35f

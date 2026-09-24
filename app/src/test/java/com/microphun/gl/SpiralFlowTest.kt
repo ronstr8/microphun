@@ -169,6 +169,37 @@ class SpiralFlowTest {
         assertTrue(flow.placed().isEmpty())
     }
 
+    @Test
+    fun `the beat can surge the spin but never stop or reverse it`() {
+        // A beat that cancelled the counter-turn made the arm stall and run
+        // backwards on every word. Drive the rule with the worst audio there is
+        // — full-scale onsets and bass switching on and off every frame — and
+        // the turn must keep its direction and never fall below its resting rate.
+        val rest = SpiralFlow.COUNTER_SPIN
+        val most = rest * (1f + SpiralFlow.SPIN_BASS + SpiralFlow.SPIN_ONSET)
+        var rate = rest
+        repeat(2000) { frame ->
+            val loud = frame % 2 == 0
+            rate = SpiralFlow.spinRate(rate, bass = if (loud) 1f else 0f, onset = if (loud) 1f else 0f, dt = STEP)
+            assertTrue("reversed or stalled: $rate", rate <= rest + 1e-5f)
+            assertTrue("ran away: $rate", rate >= most - 1e-5f)
+        }
+    }
+
+    @Test
+    fun `a beat swells the spin rather than stepping it`() {
+        val rest = SpiralFlow.COUNTER_SPIN
+        val kicked = SpiralFlow.spinRate(rest, bass = 1f, onset = 1f, dt = STEP)
+        val target = rest * (1f + SpiralFlow.SPIN_BASS + SpiralFlow.SPIN_ONSET)
+
+        // One frame moves a small part of the way, not all of it.
+        assertTrue("stepped: $kicked", (kicked - rest) / (target - rest) < 0.1f)
+
+        var rate = rest
+        repeat(60) { rate = SpiralFlow.spinRate(rate, bass = 1f, onset = 1f, dt = STEP) }
+        assertTrue("never got there: $rate", (rate - rest) / (target - rest) > 0.9f)
+    }
+
     private companion object {
         const val SPAWN = 12f
         val EXIT = ln(1400f / SPAWN)

@@ -170,5 +170,33 @@ class SpiralFlow(
          * with them, which is what makes it read as falling in.
          */
         val COUNTER_SPIN = -0.75f * SPEED / PITCH
+
+        /**
+         * How much the beat can add to the counter-turn: bass leans on it,
+         * onsets kick it. As fractions of it, so it only ever grows.
+         */
+        const val SPIN_BASS = 0.25f
+        const val SPIN_ONSET = 0.35f
+
+        /** Per second: the spin reaches most of a kick in about half a second. */
+        const val SPIN_EASE = 2.5f
+
+        /**
+         * The spin rate for the next frame, eased from [rate] towards what the
+         * beat asks for.
+         *
+         * The first version added the beat to the counter-turn outright. An
+         * onset was strong enough to cancel it and flip it for a moment, so on
+         * the device the arm stopped streaming, ran backwards, and snapped
+         * forward again with every word: "it pauses and jerks as I talk". The
+         * beat now scales the counter-turn instead — it can only surge in the
+         * direction it is already going — and the rate eases, so a kick is a
+         * swell rather than a step.
+         */
+        fun spinRate(rate: Float, bass: Float, onset: Float, dt: Float): Float {
+            val surge = 1f + SPIN_BASS * bass.coerceIn(0f, 1f) + SPIN_ONSET * onset.coerceIn(0f, 1f)
+            val target = COUNTER_SPIN * surge
+            return rate + (target - rate) * (dt * SPIN_EASE).coerceIn(0f, 1f)
+        }
     }
 }

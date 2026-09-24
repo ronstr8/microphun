@@ -131,8 +131,8 @@ class VisualizerRenderer(
 
         val name = SHADERS[currentShader]
         if (name in SPEECH_SHADERS) {
-            val arrived = collectPhrases(logging = name == WORDS_SHADER)
-            if (name == SPIRAL_SHADER) spiralLayer?.update(frame, dt, arrived, width, height)
+            collectPhrases(logging = name == WORDS_SHADER)
+            if (name == SPIRAL_SHADER) spiralLayer?.update(frame, dt, width, height)
         }
 
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
@@ -160,8 +160,8 @@ class VisualizerRenderer(
         }
     }
 
-    /** Moves new utterances into the corpus; returns how many arrived. */
-    private fun collectPhrases(logging: Boolean): Int {
+    /** Moves new utterances into the corpus. */
+    private fun collectPhrases(logging: Boolean) {
         val arrived = phrases.collect(words)
         if (arrived > 0 && logging && BuildConfig.DEBUG) {
             // The word cloud shows no phrases, so in that visual the log is the
@@ -169,7 +169,6 @@ class VisualizerRenderer(
             val phrase = phrases.generate()?.joinToString(" ") ?: "(corpus too thin)"
             Log.d(TAG, "corpus ${phrases.words} words, invented: $phrase")
         }
-        return arrived
     }
 
     private fun loadShader(index: Int) {
