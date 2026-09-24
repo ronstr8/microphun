@@ -288,7 +288,9 @@ How the corpus is fed:
 - **It drops hesitations.** The recogniser transcribes "uh" and "um"
   faithfully, and the chain replays them mid-phrase as if they were words.
   `WordCorpus.FILLERS` lists the sounds only; "like" and "you know" fill gaps
-  too, but they are also real words. The word cloud still shows them.
+  too, but they are also real words. `WordListener.tokenise` drops them from
+  the word cloud as well; the corpus filters again on its own so it holds
+  whoever feeds it.
 - **It lives on the GL thread.** `WordCorpus` is not thread safe, so rather than
   lock it, utterances cross through `WordStream` like words do and
   `PhraseSource` drains them once per frame. The renderer owns it and clears it

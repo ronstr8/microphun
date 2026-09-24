@@ -294,10 +294,16 @@ class WordListener(
         return tokens.isNotEmpty()
     }
 
+    /**
+     * Words, lowercased, without hesitations. The recogniser transcribes "uh"
+     * and "um" faithfully, and on screen they are as much noise as "a" is.
+     * Filtering here keeps settled-token counting consistent, since every
+     * hypothesis is tokenised the same way.
+     */
     private fun tokenise(text: String, minLength: Int): List<String> =
         SEPARATOR.split(text.lowercase(Locale.getDefault()))
             .mapNotNull { token ->
-                token.trim('\'').takeIf { it.length >= minLength }
+                token.trim('\'').takeIf { it.length >= minLength && it !in WordCorpus.FILLERS }
             }
 
     private fun ParcelFileDescriptor.closeQuietly() {
