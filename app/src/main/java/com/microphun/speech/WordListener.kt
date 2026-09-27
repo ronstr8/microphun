@@ -178,6 +178,7 @@ class WordListener(
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
+            RecognitionProbe.ask(this)
         }
 
     /**
@@ -317,12 +318,14 @@ class WordListener(
     private inner class Listener : RecognitionListener {
 
         override fun onPartialResults(partialResults: Bundle?) {
+            RecognitionProbe.bundle("partial", partialResults)
             // Partials are the earliest proof that audio is reaching the
             // recogniser, which is what the fallback is watching for.
             heard(emit(partialResults, final = false))
         }
 
         override fun onResults(results: Bundle?) {
+            RecognitionProbe.bundle("results", results)
             heard(emit(results, final = true))
             // A one-shot session is over; the next utterance needs a new one.
             scheduleRestart(MIN_RESTART_MILLIS)
@@ -334,16 +337,19 @@ class WordListener(
          * from scratch, so the emitted tail resets with it.
          */
         override fun onSegmentResults(segmentResults: Bundle) {
+            RecognitionProbe.bundle("segment", segmentResults)
             heard(emit(segmentResults, final = true))
             emittedCount = 0
         }
 
         override fun onEndOfSegmentedSession() {
+            RecognitionProbe.event("end of segmented session")
             emittedCount = 0
             scheduleRestart(MIN_RESTART_MILLIS)
         }
 
         override fun onError(error: Int) {
+            RecognitionProbe.event("error $error")
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                 stop()
                 return
@@ -387,12 +393,14 @@ class WordListener(
             }
         }
 
-        override fun onReadyForSpeech(params: Bundle?) = Unit
-        override fun onBeginningOfSpeech() = Unit
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-        override fun onEndOfSpeech() = Unit
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        override fun onReadyForSpeech(params: Bundle?) = RecognitionProbe.bundle("ready", params)
+        override fun onBeginningOfSpeech() = RecognitionProbe.event("beginning of speech")
+        override fun onRmsChanged(rmsdB: Float) = RecognitionProbe.rms(rmsdB)
+        override fun onBufferReceived(buffer: ByteArray?) = RecognitionProbe.buffer(buffer?.size ?: 0)
+        override fun onEndOfSpeech() = RecognitionProbe.event("end of speech")
+        override fun onEvent(eventType: Int, params: Bundle?) = RecognitionProbe.bundle("event $eventType", params)
+
+        override fun onLanguageDetection(results: Bundle) = RecognitionProbe.bundle("language", results)
     }
 
     private companion object {

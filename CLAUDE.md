@@ -65,7 +65,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
 | Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer`, `SpiralLayer` + `SpiralFlow`, `FireLayer` + `BurnCycle` + `PhotoSource` |
-| Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it), `PhraseSource` (the GL thread's owner of both) |
+| Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `RecognitionProbe` (debug-only log of everything the recogniser reports), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it), `PhraseSource` (the GL thread's owner of both) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
 
@@ -186,6 +186,31 @@ utterance and backs off exponentially on real errors while treating no-match and
 timeout as ordinary silence. Restarts go through a single pending `Runnable`,
 because a session can report both a result and an error, and `cancel` can report
 one of its own.
+
+### What the recogniser reports beyond text
+
+Android lets a client ask for more than a transcript, and every extra is a
+request the recogniser may ignore. `RecognitionProbe` asks for all of them in
+debug builds and logs what comes back under `microphun.probe`; release builds
+neither ask nor log. Samsung's on-device recogniser on the S24 (Android 16),
+probed 2026-09-25:
+
+| Signal | Result |
+| --- | --- |
+| `onBeginningOfSpeech` / `onEndOfSpeech` | Honoured, well matched to talking; occasionally fires on a short non-speech noise. The one signal that tells a voice from music. |
+| `EXTRA_ENABLE_FORMATTING` | Honoured: punctuation and case, so questions, exclamations and statements can be told apart. |
+| `EXTRA_REQUEST_WORD_TIMING` | Honoured: every word of a final segment arrives as a `RecognitionPart` with a timestamp. Speaking rate and gaps can be measured, not guessed. |
+| `EXTRA_ENABLE_LANGUAGE_DETECTION` | Honoured and very chatty — hundreds of `onLanguageDetection` calls a minute, confidence 1–3 — and noisy on unclear audio, wandering through unrelated languages. Smooth it before reacting. |
+| `EXTRA_REQUEST_WORD_CONFIDENCE` | Ignored: every part reports `CONFIDENCE_LEVEL_UNKNOWN`. |
+| `CONFIDENCE_SCORES` | Always `0.0`. Filler. |
+| `EXTRA_MAX_RESULTS` > 1 | The "second alternative" is the same text without punctuation, not an n-best. |
+| `onRmsChanged` | ~10 Hz, squashed into about −2..10 dB. The FFT is better. |
+| `UNSTABLE_TEXT` in partials | Always empty, so it cannot replace the settled-token rule below. |
+| `onBufferReceived` | Never called. |
+
+With the probe on, debug builds get punctuated, capitalised text; the
+tokeniser lowercases and splits on punctuation, so the word cloud and the
+corpus see the same words as before.
 
 ### Which words are settled
 
@@ -571,8 +596,9 @@ on 2026-09-20:
 
 Known rough edges:
 
-- The fire's photo path, its poof, and its pacing against real music have not
-  been watched on the device. Only the burn itself has been seen.
+- The fire's poof and its pacing against real music have not been watched on
+  the device. The photo picker has: the user picked photos and reported it
+  works well.
 
 - The spiral's smoothed spin and steady phrase feed are covered on the host
   but have not yet been watched on the device.
