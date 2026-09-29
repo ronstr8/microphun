@@ -64,7 +64,7 @@ cheap, and this keeps the audio path clean. The tap's resampling and its
 | Speech feed | `app/src/main/cpp/speech_tap.{h,cpp}` — resample to 16 kHz mono S16, write to a pipe; `speech_tap_test.cpp` is a host test, not in the CMake target |
 | DSP | `app/src/main/cpp/fft.{h,cpp}` — Hann-windowed radix-2 FFT; `analysis.{h,cpp}` — log-spaced bands, RMS level, spectral-flux onsets |
 | Bridge | `app/src/main/cpp/jni_bridge.cpp` ↔ `app/src/main/java/com/microphun/audio/AudioEngine.kt` |
-| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer`, `SpiralLayer` + `SpiralFlow`, `FireLayer` + `BurnCycle` + `PhotoSource` |
+| Render | `app/src/main/java/com/microphun/gl/` — `VisualizerRenderer`, `ShaderProgram`, `VisualizerSurfaceView`, `GlyphCache`, `WordLayer`, `SpiralLayer` + `SpiralFlow`, `FireLayer` + `BurnCycle` + `PhotoSource`, `CrackLayer` + `CrackCycle` + `CrackPattern`, `OffscreenImage` |
 | Speech | `app/src/main/java/com/microphun/speech/` — `WordListener` (continuous `SpeechRecognizer`, fed from our capture), `RecognitionProbe` (debug-only log of everything the recogniser reports), `WordStream` (hand-off queue), `WordCorpus` + `MarkovChain` (what was said, and phrases invented from it), `PhraseSource` (the GL thread's owner of both) |
 | Visuals | `app/src/main/assets/shaders/*.frag` |
 | Shell | `app/src/main/java/com/microphun/MainActivity.kt` — permission flow, immersive mode, lifecycle |
@@ -99,7 +99,8 @@ Existing shaders: `kaleidoscope` (mirrored wedges, the default), `plasma`
 (layered sine field), `tunnel` (polar perspective), `spectrum` (mirrored
 radial bars), `words` (a dark backdrop under the word cloud — see below),
 `spiral` (invented phrases spilling out along a spiral — see below), `fire`
-(an image burning in from the edges on the beat — see below).
+(an image burning in from the edges on the beat — see below), `crack` (glass
+over an image, cracked by every noise, harder by louder ones — see below).
 
 ## The `words` visual
 
@@ -351,6 +352,54 @@ not listen for speech; it only needs the beat.
   first and the last thing to go is a point in the middle, roughened by noise
   that drifts upward so the edge reads as flames rather than a wipe.
 
+## The `crack` visual
+
+Glass over a frame of another visual. Every noise loud enough to register
+strikes it at a random point, and the louder the noise the bigger the crack: a
+tap leaves a small star, a bang crazes half the screen. Damage builds; enough
+of it and the glass gives way — the cracks flare, the screen goes dark — and a
+fresh frame goes under new glass.
+
+| Piece | Job |
+| --- | --- |
+| `CrackCycle` | Pure clock, no GL: when a blow lands and how hard, damage, the shatter. Host-tested. |
+| `CrackPattern` | Pure geometry, no GL: one blow as line segments, in one of four forms — star, run, chip, web. Host-tested. |
+| `CrackLayer` | Draws each blow's segments once into a mask, and hands the backdrop the image and the mask. |
+| `crack.frag` | The glass, from the mask alone: refraction along each crack, dark rims, lit cores, a sweeping glint, the flash of a blow, the shatter. |
+| `OffscreenImage` | A texture with its own framebuffer. The fire and the crack visual both use it for their frame of another visual. |
+
+- **A blow is an onset, taken on its rising edge,** so one bang is one blow
+  however long the onset takes to decay, and beats closer than 0.12 s are one
+  blow. Onset says *when* but not *how hard* — it spikes to 1 for any beat —
+  so the size comes from the level's peak over the 80 ms after it, since a
+  transient is still climbing when the onset fires.
+- **Size is part absolute, part ranked against recent blows.** The first
+  version was absolute only, over a guessed range, and on the device every
+  noise in a real room landed at its bottom: a screen of identical minimum
+  cracks. Ranking against the last 16 blows guarantees a spread — the loudest
+  thing in *this* room makes the biggest crack — and the absolute part (40%)
+  still lets a genuinely loud room break the glass sooner. Debug builds log
+  each blow's peak and size under `microphun.crack`; tune the range from that.
+  The first device session did: the loudest noises peaked at 0.33–0.48, so
+  `LOUD_LEVEL` is 0.45.
+- **An onset in a quiet room is not a blow.** The beat detector reacts to
+  change in the spectrum, not loudness, so it fires in near silence — a fifth
+  of the blows in that session peaked at nothing. Below `SILENT_LEVEL` (0.02)
+  an onset is dropped before it is sized, so it neither cracks the glass nor
+  enters the ranking, where a run of silence made the next faint noise crack
+  like a bang.
+- **Blows vary in form, not only size.** Every small blow used to be four even
+  arms, and a screen of them read as a swarm of little spiders. Now each blow
+  is a star with very unequal arms (often thrown mostly one way), a run — one
+  or two long cracks through the impact, like a stress crack across a phone —
+  a chip, or, for hard blows, a web of radials joined by rings. Damage grows
+  with the square of size, so a few big blows break the glass where it takes
+  dozens of small ones.
+- **Cracks are drawn once and stay.** Each blow's segments go into an `R8`
+  mask with `GL_MAX` blending, so crossing cracks keep the brighter line
+  instead of adding up. The backdrop reads only the mask, so a screen full of
+  cracks costs the same to draw as an empty one.
+
 ## Inventing phrases
 
 `WordCorpus` keeps what the room has said and `MarkovChain` recombines it. Both
@@ -590,6 +639,11 @@ on 2026-09-20:
   from 1.6× to 2.2× per turn, and a louder filling state — and a second run
   confirmed both by screenshot: the backdrop reads as one spiral, and the
   heart and its ripples are plain to see from the first word.
+- **The glass cracks on the device** (2026-09-29). The shaders compile on
+  Adreno, and the user watched it and signed off on the look. Over 125 blows
+  the sizes spread from 0.08 to 0.93 and the glass shattered every 8–11 s of
+  steady noise. That run produced the silence gate and the lower
+  `LOUD_LEVEL`, which have not been back on the device since.
 - **The fire burns on the device** (2026-09-24). The shader compiles on
   Adreno, the offscreen snapshot works — rounds burned `kaleidoscope` and
   `plasma` — and the front closes on the centre with flames, char and embers.

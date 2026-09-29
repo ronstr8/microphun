@@ -23,9 +23,9 @@ import kotlin.random.Random
  * uniforms. All the visual character lives in the fragment shaders under
  * `assets/shaders/`; this class only plumbs.
  *
- * The [SPEECH_SHADERS] and [FIRE_SHADER] are the exceptions. The fire's
- * backdrop burns an image [FireLayer] supplies, which may be a frame of another
- * visual rendered offscreen here. The [SPEECH_SHADERS] have backdrops that are
+ * The [SPEECH_SHADERS], [FIRE_SHADER] and [CRACK_SHADER] are the exceptions.
+ * The fire burns, and the crack visual cracks, an image their layers supply,
+ * which may be a frame of another visual rendered offscreen here. The [SPEECH_SHADERS] have backdrops that are
  * fragment shaders like any other, but words are drawn over them afterwards —
  * recognised words by [WordLayer], invented phrases by [SpiralLayer] — which
  * needs geometry and textures a single triangle cannot give.
@@ -43,6 +43,7 @@ class VisualizerRenderer(
     private var wordLayer: WordLayer? = null
     private var spiralLayer: SpiralLayer? = null
     private var fireLayer: FireLayer? = null
+    private var crackLayer: CrackLayer? = null
 
     // Other visuals, compiled on demand for the fire to burn a frame of.
     private val snapshotPrograms = HashMap<String, ShaderProgram>()
@@ -102,6 +103,7 @@ class VisualizerRenderer(
         wordLayer = WordLayer(assets, words, cache).apply { create() }
         spiralLayer = SpiralLayer(assets, words, cache, phrases).apply { create() }
         fireLayer = FireLayer(photos)
+        crackLayer = CrackLayer(assets).apply { create() }
         // Programs from the old context are already gone with it.
         snapshotPrograms.clear()
         // Not a GL resource, but it goes with the word cloud: a surface is only
@@ -130,6 +132,7 @@ class VisualizerRenderer(
             if (name != WORDS_SHADER) wordLayer?.clear()
             if (name != SPIRAL_SHADER) spiralLayer?.clear()
             if (name != FIRE_SHADER) fireLayer?.clear()
+            if (name != CRACK_SHADER) crackLayer?.clear()
             if (name !in SPEECH_SHADERS) {
                 glyphs?.clear()
                 phrases.clear()
@@ -148,10 +151,10 @@ class VisualizerRenderer(
             collectPhrases(logging = name == WORDS_SHADER)
             if (name == SPIRAL_SHADER) spiralLayer?.update(frame, dt, width, height)
         }
-        if (name == FIRE_SHADER) {
-            fireLayer?.update(frame, dt, width.toInt(), height.toInt()) { framebuffer, w, h ->
-                renderSnapshot(framebuffer, w, h, frame)
-            }
+        val snapshot = Snapshot { framebuffer, w, h -> renderSnapshot(framebuffer, w, h, frame) }
+        when (name) {
+            FIRE_SHADER -> fireLayer?.update(frame, dt, width.toInt(), height.toInt(), snapshot)
+            CRACK_SHADER -> crackLayer?.update(frame, dt, width.toInt(), height.toInt(), snapshot)
         }
 
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
@@ -160,6 +163,7 @@ class VisualizerRenderer(
         when (name) {
             SPIRAL_SHADER -> spiralLayer?.bindBackdrop(shader)
             FIRE_SHADER -> fireLayer?.bindBackdrop(shader)
+            CRACK_SHADER -> crackLayer?.bindBackdrop(shader)
         }
         drawFullscreen(shader)
 
@@ -250,11 +254,12 @@ class VisualizerRenderer(
 
     companion object {
         /** Fragment shaders in `assets/shaders/`, without the extension. */
-        val SHADERS = listOf("kaleidoscope", "plasma", "tunnel", "spectrum", "words", "spiral", "fire")
+        val SHADERS = listOf("kaleidoscope", "plasma", "tunnel", "spectrum", "words", "spiral", "fire", "crack")
 
         const val WORDS_SHADER = "words"
         const val SPIRAL_SHADER = "spiral"
         const val FIRE_SHADER = "fire"
+        const val CRACK_SHADER = "crack"
 
         /** The visuals that need speech recognition running. */
         val SPEECH_SHADERS = setOf(WORDS_SHADER, SPIRAL_SHADER)
